@@ -1,10 +1,10 @@
 #!/bin/bash
 
-DIRECTORY=evaluation/create_datasets/output
-PREFIX=bpi_2013_open
-SPARK_SUBMIT_COMMAND="spark-submit --master spark://alex2.csd.auth.gr:7077"
-PREPROCESS_JAR="evaluation/incremental_evaluation/preprocess.jar"
-EXTRACTION_JAR="evaluation/incremental_evaluation/declare.jar"
+DIRECTORY=/app/output
+PREFIX=$1
+SPARK_SUBMIT_COMMAND="/opt/spark/bin/spark-submit --master local[*]"
+PREPROCESS_JAR="/app/preprocess.jar"
+EXTRACTION_JAR="/app/declare.jar"
 
 export s3accessKeyAws=minioadmin
 export s3ConnectionTimeout=600000
