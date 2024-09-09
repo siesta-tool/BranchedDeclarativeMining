@@ -26,3 +26,15 @@ lazy val root = (project in file("."))
   .settings(
     name := "DeclareMiningIncrementally"
   )
+
+assembly / assemblyMergeStrategy:= {
+  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+  case manifest if manifest.contains("MANIFEST.MF") =>
+    MergeStrategy.discard
+  case referenceOverrides if referenceOverrides.contains("reference-overrides.conf") =>
+    MergeStrategy.concat
+  case deckfour if deckfour.contains("deckfour") || deckfour.contains(".cache") =>
+    MergeStrategy.last
+  case x =>
+    MergeStrategy.last
+}

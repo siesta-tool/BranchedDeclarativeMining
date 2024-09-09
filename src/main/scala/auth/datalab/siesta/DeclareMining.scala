@@ -18,9 +18,10 @@ object DeclareMining {
     import spark.implicits._
     //get previous data if exist
     val position_path = s"""s3a://siesta/$logname/declare/position.parquet/"""
+
     val previously = try {
-      spark.read.parquet(position_path)
-        .map(x => PositionConstraint(x.getString(0), x.getString(1), x.getDouble(2)))
+      spark.read.parquet(position_path).as[PositionConstraint]
+      //        .map(x => PositionConstraint(x.getString(0), x.getString(1), x.getDouble(2))).as
     } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraint]
     }
@@ -50,14 +51,14 @@ object DeclareMining {
       .keyBy(x => (x.rule, x.event_type))
       .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.occurrences + y.occurrences))
       .map(_._2)
-      .toDS()
 
+    new_positions_constraints.count()
     new_positions_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-//    new_positions_constraints
-//      .write
-//      .mode(SaveMode.Overwrite)
-//      .parquet(position_path)
+    new_positions_constraints.toDS()
+      .write
+      .mode(SaveMode.Overwrite)
+      .parquet(position_path)
 
     val response = this.extract_all_position_constraints(new_positions_constraints, support, total_traces)
 
@@ -74,6 +75,7 @@ object DeclareMining {
     import spark.implicits._
     //get previous data if exist
     val existence_path = s"""s3a://siesta/$logname/declare/existence.parquet/"""
+
     val previously = try {
       spark.read.parquet(existence_path)
         .map(x => ActivityExactly(x.getString(0), x.getInt(1), x.getLong(2)))
@@ -111,11 +113,12 @@ object DeclareMining {
       .map(_._2)
       .toDS()
 
+    merged_constraints.count()
     merged_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-//    merged_constraints.toDF()
-//      .write.mode(SaveMode.Overwrite)
-//      .parquet(existence_path)
+    merged_constraints.toDF()
+      .write.mode(SaveMode.Overwrite)
+      .parquet(existence_path)
 
     val response = this.extract_all_existence_constraints(merged_constraints, support, total_traces)
     merged_constraints.unpersist()
@@ -132,6 +135,7 @@ object DeclareMining {
     import spark.implicits._
     //get previous U[x] if exist
     val u_path = s"""s3a://siesta/$logname/declare/unorder/u.parquet/"""
+
     val previously = try {
       spark.read.parquet(u_path)
         .map(x => (x.getString(0), x.getLong(1)))
@@ -168,11 +172,13 @@ object DeclareMining {
       })
       .toDS()
 
+    merge_u.count()
     merge_u.persist(StorageLevel.MEMORY_AND_DISK)
-//    merge_u.write.mode(SaveMode.Overwrite).parquet(u_path)
+    merge_u.write.mode(SaveMode.Overwrite).parquet(u_path)
 
     //get previous |I[a,b]UI[b,a]| if exist
     val i_path = s"""s3a://siesta/$logname/declare/unorder/i.parquet/"""
+
     val previously_i = try {
       spark.read.parquet(i_path)
         .map(x => (x.getString(0), x.getString(1), x.getLong(2)))
@@ -206,6 +212,7 @@ object DeclareMining {
       .map(x => (x.eventA, x.eventB, x.trace_id))
       .distinct()
 
+    new_pairs.count()
     new_pairs.persist(StorageLevel.MEMORY_AND_DISK)
 
     val merge_i = new_pairs
@@ -219,8 +226,9 @@ object DeclareMining {
       })
       .toDS()
 
+    merge_i.count()
     merge_i.persist(StorageLevel.MEMORY_AND_DISK)
-//    merge_i.write.mode(SaveMode.Overwrite).parquet(i_path)
+    merge_i.write.mode(SaveMode.Overwrite).parquet(i_path)
 
     val c = activity_matrix
       .map(x => (x._1, x._2))
@@ -251,120 +259,12 @@ object DeclareMining {
       .map(x => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences / total_traces))
       .collect()
 
-//    val constraints = c
-
     merge_u.unpersist()
     merge_i.unpersist()
     new_pairs.unpersist()
 
-
     c
 
-
-
-
-    //calculate new traces in this batch
-    //    val new_traces_number = bChangedTraces.value.count(x=>x._2._1==0)
-    //    val bNew_traces_number = spark.sparkContext.broadcast(new_traces_number)
-
-    //calculate new event types in the traces that changed
-    //    val t_x: RDD[(String, Long)] = complete_traces_that_changed //this will produce rdd (event_type, #new occurrences)
-    //      .rdd
-    //      .groupBy(_.trace_id)
-    //      .flatMap(t => { //find new event types per traces
-    //        val new_positions = bChangedTraces.value(t._1)
-    //        val prevEvents: Set[String] = if (new_positions._1 != 0) {
-    //          t._2.map(_.event_type).toArray.slice(0, new_positions._1 - 1).toSet
-    //        } else {
-    //          Set.empty[String]
-    //        }
-    //        t._2.toArray
-    //          .slice(new_positions._1, new_positions._2 + 1) //+1 because last one is exclusive
-    //          .map(_.event_type)
-    //          .filter(e => !prevEvents.contains(e))
-    //          .distinct
-    //          .map(e => (e, 1L)) //mapped to event type,1 (they will be counted later)
-    //      })
-    //      .keyBy(_._1)
-    //      .reduceByKey((a, b) => (a._1, a._2 + b._2))
-    //      .map(_._2)
-
-    //extract pairs that didn't exist before in the traces
-    //    val new_pairs = complete_pairs_that_changed
-    //      .rdd
-    //      .filter(x => x.eventA != x.eventB)
-    //      .groupBy(_.trace_id)
-    //      .flatMap(t => {
-    //        val new_positions = bChangedTraces.value(t._1)
-    //        val prev_pairs = t._2.
-    //          filter(_.positionB < new_positions._1)
-    //          .map(x => (x.eventA, x.eventB))
-    //          .toSet
-    //        val news = t._2
-    //          .filter(_.positionB >= new_positions._1) //for  new events
-    //          .map(x => { //swap positions in order to search for new traces that contain either (a,b) and (b,a)
-    //            if (x.eventA > x.eventB) {
-    //              PairFull(x.eventB, x.eventA, x.trace_id, x.positionB, x.positionA)
-    //            } else {
-    //              x
-    //            }
-    //          })
-    //          .filter(x => !prev_pairs.contains((x.eventA, x.eventB)) && !prev_pairs.contains((x.eventB, x.eventA)))
-    //        news
-    //      })
-
-    //how the value |I[a,b]UI[b,a]| changes, calculate  where a<b
-    //    val new_unique_pairs = new_pairs
-    //      .map(x => (x.eventA, x.eventB, 1L))
-    //      .keyBy(x => (x._1, x._2))
-    //      .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
-    //      .map(_._2)
-    //
-    //
-    //    val new_unorder_constraints = new_pairs.map(x=>(x.eventA,x.eventB))
-    ////      .filter(x => x._1 != x._2)
-    //      .keyBy(_._1) //key by the first activity and bring the new U[a]
-    //      .leftOuterJoin(t_x.keyBy(_._1))
-    //      .map(x => {
-    //        val eventA = x._2._1._1
-    //        val eventB = x._2._1._2
-    //        val key = if (eventA < eventB) eventA + eventB
-    //        else eventB + eventA
-    //        UnorderedHelper(eventA, eventB, x._2._2.getOrElse("", 0L)._2, 0L, 0L, key)
-    //      })
-    //      .keyBy(_.eventB) //group by the second activity and bring U[B]
-    //      .leftOuterJoin(t_x.keyBy(_._1))
-    //      .map(x => {
-    //        UnorderedHelper(x._2._1.eventA, x._2._1.eventB, x._2._1.ua, x._2._2.getOrElse("", 0L)._2, 0L, x._2._1.key)
-    //      })
-    //      .keyBy(_.key)
-    //      .leftOuterJoin(new_unique_pairs.keyBy(x => x._1 + x._2))
-    //      .map(x => {
-    //        val p = x._2._1
-    //        UnorderedHelper(p.eventA, p.eventB, p.ua, p.ub, x._2._2.getOrElse("", "", 0L)._3, p.key)
-    //      })
-    //      .flatMap(x => extract_unordered_constraints(x, bNew_traces_number))
-    //
-    //    val test = new_unorder_constraints.collect()
-    //
-    //    //merge with previous values if exist
-    //    val updated_constraints = new_unorder_constraints
-    //      .keyBy(x => (x.rule, x.eventA, x.eventB))
-    //      .fullOuterJoin(previously.rdd.keyBy(x => (x.rule, x.eventA, x.eventB)))
-    //      .map(x => PairConstraint(x._1._1, x._1._2, x._1._3,
-    //        x._2._1.getOrElse(PairConstraint("", "", "", 0L)).occurrences +
-    //          x._2._2.getOrElse(PairConstraint("", "", "", 0L)).occurrences))
-    //      .toDS()
-    //    updated_constraints.persist(StorageLevel.MEMORY_AND_DISK)
-    //
-    //    //write updated constraints back to s3
-    //    updated_constraints.write.mode(SaveMode.Overwrite).parquet(unorder_path)
-    //
-    //    //compute constraints using support and collect them
-    //    val constraints = this.extract_all_unorder_constraints(updated_constraints, support, total_traces)
-    //
-    //    updated_constraints.unpersist()
-    //    constraints
 
   }
 
@@ -377,6 +277,7 @@ object DeclareMining {
     import spark.implicits._
     //get previous data if exist
     val order_path = s"""s3a://siesta/$logname/declare/order.parquet/"""
+
     val previously = try {
       spark.read.parquet(order_path)
         .map(x => PairConstraint(x.getString(0), x.getString(1), x.getString(2), x.getDouble(3)))
@@ -453,14 +354,15 @@ object DeclareMining {
         x._2._1.getOrElse(PairConstraint("", "", "", 0L)).occurrences +
           x._2._2.getOrElse(PairConstraint("", "", "", 0L)).occurrences))
       .toDS()
+
+    updated_constraints.count()
     updated_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
     //    write updated constraints back to s3
-//    updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
+    updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
 
     //compute constraints using support and collect them
     val constraints = this.extract_all_ordered_constraints(updated_constraints, bUnique_traces_to_event_types, activity_matrix, support)
-
 
     updated_constraints.unpersist()
     constraints
@@ -483,10 +385,11 @@ object DeclareMining {
       .filter(x => x._1 != x._2)
       .toDS()
 
+    new_negative_pairs.count()
     new_negative_pairs.persist(StorageLevel.MEMORY_AND_DISK)
 
     //    write new ones back to S3
-//    new_negative_pairs.write.mode(s.Overwrite).parquet(order_path)
+    new_negative_pairs.write.mode(SaveMode.Overwrite).parquet(order_path)
 
     val response = new_negative_pairs.collect()
     new_negative_pairs.unpersist()
@@ -511,9 +414,8 @@ object DeclareMining {
     l.toList
   }
 
-  private def extract_all_position_constraints(constraints: Dataset[PositionConstraint], support: Double, total_traces: Long): Array[PositionConstraint] = {
+  private def extract_all_position_constraints(constraints: RDD[PositionConstraint], support: Double, total_traces: Long): Array[PositionConstraint] = {
     constraints
-      .rdd
       .filter(x => (x.occurrences / total_traces) >= support)
       .map(x => PositionConstraint(x.rule, x.event_type, x.occurrences / total_traces))
       .collect()

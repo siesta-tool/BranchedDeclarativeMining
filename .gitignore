@@ -10,3 +10,7 @@ project/project*
 
 *.iml
 evaluation/venv/*
+*.withTimestamp
+*.txt
+*.jar
+*.xes

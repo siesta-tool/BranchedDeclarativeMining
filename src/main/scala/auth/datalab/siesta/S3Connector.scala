@@ -25,8 +25,8 @@ class S3Connector {
   def initialize(logname: String): Unit = {
     this.logname = logname
     lazy val spark = SparkSession.builder()
-      .appName("SIESTA indexing")
-      .master("local[*]")
+      .appName("Declare extraction")
+//      .master("local[*]")
       .getOrCreate()
 
     val s3accessKeyAws = Utilities.readEnvVariable("s3accessKeyAws")
@@ -42,7 +42,14 @@ class S3Connector {
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.path.style.access", "true")
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.ssl.enabled", "true")
-    spark.sparkContext.hadoopConfiguration.set("fs.s3a.bucket.create.enabled", "true")
+
+
+//    spark.conf.set("spark.hadoop.fs.s3a.committer.name", "directory")
+//    spark.conf.set("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+//    spark.conf.set("spark.hadoop.fs.s3a.committer.staging.conflict-mode", "replace")
+//    spark.conf.set("spark.hadoop.fs.s3a.committer.staging.abort.pending.uploads", "true")
+//    spark.conf.set("spark.hadoop.fs.s3a.committer.magic.enabled", "false") // Magic commit is disabled by default
+
 
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     spark.conf.set("spark.sql.parquet.filterPushdown", "true")
@@ -94,7 +101,7 @@ class S3Connector {
       })
   }
 
-  def get_index_table():Dataset[PairFull] = {
+  def get_index_table(): Dataset[PairFull] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     spark.read.parquet(this.index_table)
