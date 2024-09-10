@@ -63,12 +63,15 @@ object declare_mining {
         .collectAsMap()
 
       val bChangedTraces = spark.sparkContext.broadcast(changed_traces)
+
+      val changedTraces = bChangedTraces.value.keys.toSeq
       //maintain from the original events those that belong to a trace that changed
       val complete_traces_that_changed = all_events
-        .filter(x => bChangedTraces.value.keys.toSet.contains(x.trace_id))
+        .filter(functions.col("trace_id").isin(changedTraces:_*))
+      complete_traces_that_changed.count()
 
       val complete_pairs_that_changed = all_pairs
-        .filter(x => bChangedTraces.value.keys.toSet.contains(x.trace_id))
+        .filter(functions.col("trace_id").isin(changedTraces:_*))
 
       complete_traces_that_changed.persist(StorageLevel.MEMORY_AND_DISK)
       complete_pairs_that_changed.persist(StorageLevel.MEMORY_AND_DISK)
