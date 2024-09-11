@@ -1,12 +1,7 @@
 package auth.datalab.siesta
 
 import auth.datalab.siesta.Structs.{Event, MetaData, PairFull}
-import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.log4j.{Level, Logger}
-import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Dataset, Row, SaveMode, SparkSession}
-
-import java.sql.Timestamp
+import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
 
 class S3Connector {
 
@@ -26,7 +21,7 @@ class S3Connector {
     this.logname = logname
     lazy val spark = SparkSession.builder()
       .appName("Declare extraction")
-//      .master("local[*]")
+      //      .master("local[*]")
       .getOrCreate()
 
     val s3accessKeyAws = Utilities.readEnvVariable("s3accessKeyAws")
@@ -42,7 +37,6 @@ class S3Connector {
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.path.style.access", "true")
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.ssl.enabled", "true")
-
 
 
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
@@ -86,12 +80,9 @@ class S3Connector {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     spark.read.parquet(this.seq_table)
-      .flatMap(x => {
-        val pEvents = x.getAs[Seq[Row]]("events")
-          .zipWithIndex
-          .map(y => (y._1.getString(0), y._1.getString(1), y._2)) // map to eventType,timestamp,index
-        val trace_id = x.getAs[String]("trace_id")
-        pEvents.map(x => Event(x._1, x._2, x._3, trace_id))
+      .map(x => {
+        Event(trace_id = x.getAs[String]("trace_id"), ts = x.getAs[String]("timestamp"), event_type = x.getAs[String]("event_type"),
+          pos = x.getAs[Int]("position"))
       })
   }
 
@@ -99,15 +90,13 @@ class S3Connector {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     spark.read.parquet(this.index_table)
-      .rdd.flatMap(row => {
+      .rdd.map(row => {
         val eventA = row.getAs[String]("eventA")
         val eventB = row.getAs[String]("eventB")
-        row.getAs[Seq[Row]]("occurrences").flatMap(oc => {
-          val id = oc.getString(0)
-          oc.getAs[Seq[Row]](1).map(o => {
-            Structs.PairFull(eventA, eventB, id, o.getInt(0), o.getInt(1))
-          })
-        })
+        val posA = row.getAs[Int]("positionA")
+        val posB = row.getAs[Int]("positionB")
+        val trace_id = row.getAs[String]("trace_id")
+        Structs.PairFull(eventA, eventB, trace_id, posA, posB)
       }).toDS()
   }
 
