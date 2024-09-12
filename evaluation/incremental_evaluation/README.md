@@ -8,4 +8,7 @@ Run from the root directory
 ```bash
 docker run -t incremental_declare -f evaluation/incremental_evaluation/Dockerfile .
 ```
-Once the process is completed, 
++Once the process is completed,
++```bash
++docker run -d -v /home/mavroudopoulos/siesta/DeclareIncremental/evaluation/create_datasets/output/:/app/output --network siesta-net -p4040:4040 incremental_declare
++```

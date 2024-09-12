@@ -146,7 +146,7 @@ if __name__ == "__main__":
     for_next = []
     for n in range(num_logs):
         print(n)
-        l1,for_next = create_additional_log(log,want_days,for_next,0,"")
+        l1,for_next = create_additional_log(log,want_days,for_next,n,"")
         log_name = 'output/' + logfile.split("/")[-1].split(".")[0] + "_" + str(n) + ".withTimestamp"
         with open(log_name, 'w') as fout:
             for line in l1:
