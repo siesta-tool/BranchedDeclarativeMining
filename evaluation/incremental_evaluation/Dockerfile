@@ -39,6 +39,7 @@ tar xvf spark-3.5.1-bin-hadoop3.tgz && mv spark-3.5.1-bin-hadoop3/ /opt/spark &&
 RUN mkdir /app
 WORKDIR /app
 RUN mkdir /app/output
+RUN mkdir /tmp/spark-events
 COPY --from=declare /app/declare.jar /app/declare.jar
 COPY --from=preprocess /app/SequenceDetectionPreprocess/preprocess.jar /app/preprocess.jar
 COPY evaluation/incremental_evaluation/script.sh /app/script.sh
