@@ -24,7 +24,7 @@ FROM builder AS preprocess
 RUN apt-get install git
 
 WORKDIR /app
-RUN git clone -b trace_id_string https://github.com/mavroudo/SequenceDetectionPreprocess.git
+RUN git clone -b last_checked_position https://github.com/mavroudo/SequenceDetectionPreprocess.git
 WORKDIR /app/SequenceDetectionPreprocess
 RUN sbt clean assembly
 RUN ls target/scala-2.12/
