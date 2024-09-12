@@ -20,7 +20,7 @@ if [ -d "$DIRECTORY" ]; then
     echo "Processing $FILENAME"
 
      # Run Spark job using spark-submit and capture the output
-      output=$($SPARK_SUBMIT_COMMAND "$PREPROCESS_JAR" -f "$file" --logname "$PREFIX" --last_checked_split day -s 3 2>&1)
+      output=$($SPARK_SUBMIT_COMMAND "$PREPROCESS_JAR" -f "$file" --logname "$PREFIX" --last_checked_split day -s 3 --lookback 2 2>&1)
 
       # Check if the Spark job failed
       if [ $? -ne 0 ]; then
