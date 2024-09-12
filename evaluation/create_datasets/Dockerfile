@@ -7,6 +7,7 @@ COPY multiple_datasets_realistic.py /app/script.py
 WORKDIR /app
 RUN mkdir /app/input
 RUN mkdir /app/output
+RUN mkdir /tmp/spark-events
 VOLUME /app/input
 VOLUME /app/output
 

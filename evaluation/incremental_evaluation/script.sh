@@ -2,7 +2,7 @@
 
 DIRECTORY=/app/output
 PREFIX=$1
-SPARK_SUBMIT_COMMAND="/opt/spark/bin/spark-submit --master local[*] --driver-memory 50g"
+SPARK_SUBMIT_COMMAND="/opt/spark/bin/spark-submit --master local[*] --driver-memory 50g --conf spark.eventLog.enabled=true --conf spark.eventLog.dir=/tmp/spark-events"
 PREPROCESS_JAR="/app/preprocess.jar"
 EXTRACTION_JAR="/app/declare.jar"
 
