@@ -6,9 +6,9 @@ created by executed the multiple_datasets_realistic.py inside the create_dataset
 #### To execute
 Run from the root directory
 ```bash
-docker run -t incremental_declare -f evaluation/incremental_evaluation/Dockerfile .
+docker build -t incremental_declare -f evaluation/incremental_evaluation/Dockerfile .
 ```
 +Once the process is completed,
-+```bash
+```bash
 +docker run -d -v /home/mavroudopoulos/siesta/DeclareIncremental/evaluation/create_datasets/output/:/app/output --network siesta-net -p4040:4040 incremental_declare
-+```
+```
