@@ -6,7 +6,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
-import scala.collection.convert.ImplicitConversions.`set AsJavaSet`
+
 import scala.collection.mutable.ListBuffer
 
 object DeclareMining {
@@ -191,7 +191,7 @@ object DeclareMining {
       .groupBy(_.trace_id)
       .flatMap(t => { // find new event types per traces
         val new_positions = bChangedTraces.value(t._1)
-        val prevEvents: Set[String] = if (new_positions._1 != 0) {
+        var prevEvents: Set[String] = if (new_positions._1 != 0) {
           t._2.map(_.event_type).toArray.slice(0, new_positions._1 - 1).toSet
         } else {
           Set.empty[String]
@@ -205,21 +205,16 @@ object DeclareMining {
 
         // Iterate over new events and previous events
         for (e1 <- new_events if !prevEvents.contains(e1)) {
-          for (e2 <- prevEvents) {
-            if (e1 < e2) {
-              l += ((e1, e2, 1L)) // Add to the list if e1 < e2 and they're unique
-            } else if (e1 > e2) {
-              l += ((e2, e1, -1L)) // Perform an operation if e1 > e2 (else-if block)
-            }
+          for (e2 <- prevEvents if e1 < e2) {
+            l += ((e1, e2, 1L)) // Add to the list if e1 < e2 and they're unique
           }
-          prevEvents.add(e1) // Add e1 to prevEvents
+          prevEvents = prevEvents + e1 // Return a new Set with e1 added
         }
 
         l.toList
       })
       .keyBy(x => (x._1, x._2))
       .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
-
 
     val merge_i = new_pairs
       .fullOuterJoin(previously_i.rdd.keyBy(x => (x._1, x._2)))
