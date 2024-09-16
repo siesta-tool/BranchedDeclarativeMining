@@ -6,6 +6,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
+import scala.collection.convert.ImplicitConversions.`set AsJavaSet`
 import scala.collection.mutable.ListBuffer
 
 object DeclareMining {
@@ -127,7 +128,6 @@ object DeclareMining {
   }
 
   def extract_unordered(logname: String, complete_traces_that_changed: Dataset[Event],
-                        complete_pairs_that_changed: Dataset[PairFull],
                         bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
                         activity_matrix: RDD[(String, String)],
                         support: Double, total_traces: Long): Array[PairConstraint] = {
@@ -186,45 +186,89 @@ object DeclareMining {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[(String, String, Long)]
     }
 
-    //extract pairs that didn't exist before in the traces
-    val new_pairs = complete_pairs_that_changed
+    val new_pairs = complete_traces_that_changed
       .rdd
-      .filter(x => x.eventA != x.eventB)
       .groupBy(_.trace_id)
-      .flatMap(t => {
+      .flatMap(t => { // find new event types per traces
         val new_positions = bChangedTraces.value(t._1)
-        val prev_pairs = t._2. //pairs that concluded in the previous batches
-          filter(_.positionB < new_positions._1)
-          .map(x => (x.eventA, x.eventB))
+        val prevEvents: Set[String] = if (new_positions._1 != 0) {
+          t._2.map(_.event_type).toArray.slice(0, new_positions._1 - 1).toSet
+        } else {
+          Set.empty[String]
+        }
+        val new_events = t._2.toArray
+          .slice(new_positions._1, new_positions._2 + 1) // +1 because last one is exclusive
+          .map(_.event_type)
           .toSet
-        val news = t._2 //new pairs that concluded in this batch
-          .filter(_.positionB >= new_positions._1) //for  new events
-          .map(x => { //swap positions in order to search for new traces that contain either (a,b) and (b,a)
-            if (x.eventA > x.eventB) {
-              PairFull(x.eventB, x.eventA, x.trace_id, x.positionB, x.positionA)
-            } else {
-              x
+
+        val l = ListBuffer[(String, String, Long)]()
+
+        // Iterate over new events and previous events
+        for (e1 <- new_events if !prevEvents.contains(e1)) {
+          for (e2 <- prevEvents) {
+            if (e1 < e2) {
+              l += ((e1, e2, 1L)) // Add to the list if e1 < e2 and they're unique
+            } else if (e1 > e2) {
+              l += ((e2, e1, -1L)) // Perform an operation if e1 > e2 (else-if block)
             }
-          })
-          .filter(x => !prev_pairs.contains((x.eventA, x.eventB)) && !prev_pairs.contains((x.eventB, x.eventA)))
-        news
+          }
+          prevEvents.add(e1) // Add e1 to prevEvents
+        }
+
+        l.toList
       })
-      .map(x => (x.eventA, x.eventB, x.trace_id))
-      .distinct()
-
-    new_pairs.count()
-    new_pairs.persist(StorageLevel.MEMORY_AND_DISK)
-
-    val merge_i = new_pairs
-      .map(x => (x._1, x._2, 1L))
       .keyBy(x => (x._1, x._2))
       .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
+
+
+    val merge_i = new_pairs
       .fullOuterJoin(previously_i.rdd.keyBy(x => (x._1, x._2)))
       .map(x => {
         val total = x._2._1.getOrElse(("", "", 0L))._3 + x._2._2.getOrElse(("", "", 0L))._3
         (x._1._1, x._1._2, total)
       })
       .toDS()
+
+
+//    //extract pairs that didn't exist before in the traces
+//    val new_pairs = complete_pairs_that_changed
+//      .rdd
+//      .filter(x => x.eventA != x.eventB)
+//      .groupBy(_.trace_id)
+//      .flatMap(t => {
+//        val new_positions = bChangedTraces.value(t._1)
+//        val prev_pairs = t._2. //pairs that concluded in the previous batches
+//          filter(_.positionB < new_positions._1)
+//          .map(x => (x.eventA, x.eventB))
+//          .toSet
+//        val news = t._2 //new pairs that concluded in this batch
+//          .filter(_.positionB >= new_positions._1) //for  new events
+//          .map(x => { //swap positions in order to search for new traces that contain either (a,b) and (b,a)
+//            if (x.eventA > x.eventB) {
+//              PairFull(x.eventB, x.eventA, x.trace_id, x.positionB, x.positionA)
+//            } else {
+//              x
+//            }
+//          })
+//          .filter(x => !prev_pairs.contains((x.eventA, x.eventB)) && !prev_pairs.contains((x.eventB, x.eventA)))
+//        news
+//      })
+//      .map(x => (x.eventA, x.eventB, x.trace_id))
+//      .distinct()
+//
+//    new_pairs.count()
+//    new_pairs.persist(StorageLevel.MEMORY_AND_DISK)
+//
+//    val merge_i = new_pairs
+//      .map(x => (x._1, x._2, 1L))
+//      .keyBy(x => (x._1, x._2))
+//      .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
+//      .fullOuterJoin(previously_i.rdd.keyBy(x => (x._1, x._2)))
+//      .map(x => {
+//        val total = x._2._1.getOrElse(("", "", 0L))._3 + x._2._2.getOrElse(("", "", 0L))._3
+//        (x._1._1, x._1._2, total)
+//      })
+//      .toDS()
 
     merge_i.count()
     merge_i.persist(StorageLevel.MEMORY_AND_DISK)
