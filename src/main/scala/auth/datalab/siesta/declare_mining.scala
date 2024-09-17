@@ -36,8 +36,6 @@ object declare_mining {
         .toMap
       val bEvent_types_occurrences = spark.sparkContext.broadcast(event_types_occurrences)
 
-      //      extract all pairs
-      val all_pairs: Dataset[PairFull] = s3Connector.get_index_table()
       //all possible activity pair matrix
       val activity_matrix: RDD[(String, String)] = Utilities.get_activity_matrix(event_types_occurrences)
       activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
@@ -100,7 +98,7 @@ object declare_mining {
 
       //handle negative pairs = pairs that does not appear not even once in the data
       val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
-        all_pairs, activity_matrix)
+        activity_matrix)
 
       val l = ListBuffer[String]()
       //each negative pair wil have 100% support in the constraints not-coexist, exclusive-choice, not succession and not chain-succession

@@ -409,19 +409,23 @@ object DeclareMining {
 
   }
 
-  def handle_negatives(logname: String, all_pairs: Dataset[PairFull],
-                       activity_matrix: RDD[(String, String)]): Array[(String, String)] = {
+  def handle_negatives(logname: String, activity_matrix: RDD[(String, String)]): Array[(String, String)] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     //get previous data if exist
-    val order_path = s"""s3a://siesta/$logname/declare/negatives.parquet/"""
+    val negative_path = s"""s3a://siesta/$logname/declare/negatives.parquet/"""
 
-    val new_negative_pairs = activity_matrix.subtract(
-        all_pairs
-          .select("eventA", "eventB")
-          .distinct()
-          .rdd
-          .map(x => (x.getString(0), x.getString(1))))
+    val order_path = s"""s3a://siesta/$logname/declare/order.parquet/"""
+
+    val ordered_response = try {
+      spark.read.parquet(order_path)
+        .filter(x => x.getString(0) == "response" && x.getDouble(3) > 0)
+        .map(x => (x.getString(1), x.getString(2)))
+    } catch {
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[(String, String)]
+    }
+
+    val new_negative_pairs = activity_matrix.subtract(ordered_response.rdd)
       .filter(x => x._1 != x._2)
       .toDS()
 
@@ -429,7 +433,7 @@ object DeclareMining {
     new_negative_pairs.persist(StorageLevel.MEMORY_AND_DISK)
 
     //    write new ones back to S3
-    new_negative_pairs.write.mode(SaveMode.Overwrite).parquet(order_path)
+    new_negative_pairs.write.mode(SaveMode.Overwrite).parquet(negative_path)
 
     val response = new_negative_pairs.collect()
     new_negative_pairs.unpersist()
