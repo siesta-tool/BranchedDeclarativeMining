@@ -36,11 +36,17 @@ object Utilities {
         last_declare_mined)}).head
   }
 
-  def get_activity_matrix(all_events:Dataset[Event]):RDD[(String,String)]={
+  def get_activity_matrix(event_types_occurrences:scala.collection.Map[String, Long]):RDD[(String,String)]={
     val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
-    val activities = all_events.select("event_type").distinct().map(x=>x.getString(0)).rdd
-    activities.cartesian(activities)
-  }
 
+    val keys: Iterable[String] = event_types_occurrences.keys
+
+    val cartesianProduct: Iterable[(String, String)] = for {
+      key1 <- keys
+      key2 <- keys
+    } yield (key1, key2)
+
+    SparkSession.builder().getOrCreate().sparkContext.parallelize(cartesianProduct.toSeq)
+
+  }
 }
