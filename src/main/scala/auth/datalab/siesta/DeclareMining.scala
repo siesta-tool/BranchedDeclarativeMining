@@ -6,7 +6,6 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
-
 import scala.collection.mutable.ListBuffer
 
 object DeclareMining {
@@ -206,8 +205,12 @@ object DeclareMining {
         // Iterate over new events and previous events
         for (e1 <- new_events if !prevEvents.contains(e1)) {
           for (e2 <- prevEvents) {
-            if (e1 < e2) { l += ((e1, e2, 1L)) } // Add to the list if e1 < e2 and they're unique
-            else if (e2 > e1) { l += ((e2,e1,1L)) }
+            if (e1 < e2) {
+              l += ((e1, e2, 1L))
+            } // Add to the list if e1 < e2 and they're unique
+            else if (e2 > e1) {
+              l += ((e2, e1, 1L))
+            }
           }
           prevEvents = prevEvents + e1 // Return a new Set with e1 added
         }
@@ -224,81 +227,11 @@ object DeclareMining {
         (x._1._1, x._1._2, total)
       })
       .toDS()
-
-
-//    //extract pairs that didn't exist before in the traces
-//    val new_pairs = complete_pairs_that_changed
-//      .rdd
-//      .filter(x => x.eventA != x.eventB)
-//      .groupBy(_.trace_id)
-//      .flatMap(t => {
-//        val new_positions = bChangedTraces.value(t._1)
-//        val prev_pairs = t._2. //pairs that concluded in the previous batches
-//          filter(_.positionB < new_positions._1)
-//          .map(x => (x.eventA, x.eventB))
-//          .toSet
-//        val news = t._2 //new pairs that concluded in this batch
-//          .filter(_.positionB >= new_positions._1) //for  new events
-//          .map(x => { //swap positions in order to search for new traces that contain either (a,b) and (b,a)
-//            if (x.eventA > x.eventB) {
-//              PairFull(x.eventB, x.eventA, x.trace_id, x.positionB, x.positionA)
-//            } else {
-//              x
-//            }
-//          })
-//          .filter(x => !prev_pairs.contains((x.eventA, x.eventB)) && !prev_pairs.contains((x.eventB, x.eventA)))
-//        news
-//      })
-//      .map(x => (x.eventA, x.eventB, x.trace_id))
-//      .distinct()
-//
-//    new_pairs.count()
-//    new_pairs.persist(StorageLevel.MEMORY_AND_DISK)
-//
-//    val merge_i = new_pairs
-//      .map(x => (x._1, x._2, 1L))
-//      .keyBy(x => (x._1, x._2))
-//      .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
-//      .fullOuterJoin(previously_i.rdd.keyBy(x => (x._1, x._2)))
-//      .map(x => {
-//        val total = x._2._1.getOrElse(("", "", 0L))._3 + x._2._2.getOrElse(("", "", 0L))._3
-//        (x._1._1, x._1._2, total)
-//      })
-//      .toDS()
-
     merge_i.count()
     merge_i.persist(StorageLevel.MEMORY_AND_DISK)
     merge_i.write.mode(SaveMode.Overwrite).parquet(i_path)
 
-    val c = activity_matrix
-      .map(x => (x._1, x._2))
-      .keyBy(_._1)
-      //key by the first activity and bring the new U[a]
-      .leftOuterJoin(merge_u.rdd.keyBy(_._1))
-      .map(x => {
-        val eventA = x._2._1._1
-        val eventB = x._2._1._2
-        val key = if (eventA < eventB) eventA + eventB
-        else eventB + eventA
-        UnorderedHelper(eventA, eventB, x._2._2.getOrElse("", 0L)._2, 0L, 0L, key)
-      })
-      .keyBy(_.eventB) //group by the second activity and bring U[B]
-      .leftOuterJoin(merge_u.rdd.keyBy(_._1))
-      .map(x => {
-        UnorderedHelper(x._2._1.eventA, x._2._1.eventB, x._2._1.ua, x._2._2.getOrElse("", 0L)._2, 0L, x._2._1.key)
-      })
-      .keyBy(_.key)
-      .leftOuterJoin(merge_i.rdd.keyBy(x => x._1 + x._2))
-      .map(x => {
-        val p = x._2._1
-        UnorderedHelper(p.eventA, p.eventB, p.ua, p.ub, x._2._2.getOrElse("", "", 0L)._3, p.key)
-      })
-      .distinct()
-      .flatMap(x => extract_unordered_constraints(x, total_traces))
-      .filter(x => (x.occurrences / total_traces) >= support)
-      .map(x => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences / total_traces))
-      .collect()
-
+    val c = extract_all_unorder_constraints(merge_u, merge_i, activity_matrix, support, total_traces)
     merge_u.unpersist()
     merge_i.unpersist()
     new_pairs.unpersist()
@@ -458,14 +391,14 @@ object DeclareMining {
     l.toList
   }
 
-  private def extract_all_position_constraints(constraints: RDD[PositionConstraint], support: Double, total_traces: Long): Array[PositionConstraint] = {
+  def extract_all_position_constraints(constraints: RDD[PositionConstraint], support: Double, total_traces: Long): Array[PositionConstraint] = {
     constraints
       .filter(x => (x.occurrences / total_traces) >= support)
       .map(x => PositionConstraint(x.rule, x.event_type, x.occurrences / total_traces))
       .collect()
   }
 
-  private def extract_all_existence_constraints(existences: Dataset[ActivityExactly], support: Double, total_traces: Long): Array[ExistenceConstraint] = {
+  def extract_all_existence_constraints(existences: Dataset[ActivityExactly], support: Double, total_traces: Long): Array[ExistenceConstraint] = {
     existences
       .rdd
       .groupBy(_.event_type)
@@ -503,24 +436,40 @@ object DeclareMining {
       }.collect()
   }
 
-  private def extract_all_unorder_constraints(constraints: Dataset[PairConstraint], support: Double, total_traces: Long): Array[PairConstraint] = {
-    constraints
-      .rdd
-      .flatMap(x => {
-        val l = ListBuffer[PairConstraint]()
-        if (x.rule == "co-existence") {
-          l += PairConstraint("exclusive choice", x.eventA, x.eventB, total_traces - x.occurrences)
-        }
-        l += x
-        l.toList
-      }).filter(x => (x.occurrences / total_traces) >= support)
+  def extract_all_unorder_constraints(merge_u: Dataset[(String, Long)], merge_i: Dataset[(String, String, Long)], activity_matrix: RDD[(String, String)], support: Double, total_traces: Long): Array[PairConstraint] = {
+    activity_matrix
+      .map(x => (x._1, x._2))
+      .keyBy(_._1)
+      //key by the first activity and bring the new U[a]
+      .leftOuterJoin(merge_u.rdd.keyBy(_._1))
+      .map(x => {
+        val eventA = x._2._1._1
+        val eventB = x._2._1._2
+        val key = if (eventA < eventB) eventA + eventB
+        else eventB + eventA
+        UnorderedHelper(eventA, eventB, x._2._2.getOrElse("", 0L)._2, 0L, 0L, key)
+      })
+      .keyBy(_.eventB) //group by the second activity and bring U[B]
+      .leftOuterJoin(merge_u.rdd.keyBy(_._1))
+      .map(x => {
+        UnorderedHelper(x._2._1.eventA, x._2._1.eventB, x._2._1.ua, x._2._2.getOrElse("", 0L)._2, 0L, x._2._1.key)
+      })
+      .keyBy(_.key)
+      .leftOuterJoin(merge_i.rdd.keyBy(x => x._1 + x._2))
+      .map(x => {
+        val p = x._2._1
+        UnorderedHelper(p.eventA, p.eventB, p.ua, p.ub, x._2._2.getOrElse("", "", 0L)._3, p.key)
+      })
+      .distinct()
+      .flatMap(x => extract_unordered_constraints(x, total_traces))
+      .filter(x => (x.occurrences / total_traces) >= support)
       .map(x => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences / total_traces))
       .collect()
 
 
   }
 
-  private def extract_all_ordered_constraints(constraints: Dataset[PairConstraint],
+  def extract_all_ordered_constraints(constraints: Dataset[PairConstraint],
                                               bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
                                               activity_matrix: RDD[(String, String)],
                                               support: Double): Array[PairConstraint] = {

@@ -147,7 +147,7 @@ object declare_mining {
             }
           })
         metaData.last_declare_mined = last_ts.toString
-        s3Connector.write_metadata(metaData)
+//        s3Connector.write_metadata(metaData)
       }
       //TODO: change support/ total traces to broadcasted variables
 
