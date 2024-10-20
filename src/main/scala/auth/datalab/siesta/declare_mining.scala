@@ -23,6 +23,9 @@ object declare_mining {
       import spark.implicits._
       //extract all events
       val all_events: Dataset[Event] = s3Connector.get_events_sequence_table()
+
+      all_events.persist(StorageLevel.MEMORY_AND_DISK)
+
       //extract event_types -> #occurrences
       val event_types_occurrences: scala.collection.Map[String, Long] = all_events
         .select("event_type", "trace_id")
@@ -33,11 +36,8 @@ object declare_mining {
         .toMap
       val bEvent_types_occurrences = spark.sparkContext.broadcast(event_types_occurrences)
 
-      all_events.persist(StorageLevel.MEMORY_AND_DISK)
-      //extract all pairs
-      val all_pairs: Dataset[PairFull] = s3Connector.get_index_table()
       //all possible activity pair matrix
-      val activity_matrix: RDD[(String, String)] = Utilities.get_activity_matrix(all_events)
+      val activity_matrix: RDD[(String, String)] = Utilities.get_activity_matrix(event_types_occurrences)
       activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
 
       //keep only the recently added events
@@ -51,6 +51,9 @@ object declare_mining {
             Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
           }
         })
+
+      println(new_events.count())
+      println(bPrevMining.value)
 
       //maintain the traces that changed
       val changed_traces: scala.collection.Map[String, (Int, Int)] = new_events
@@ -70,11 +73,11 @@ object declare_mining {
         .filter(functions.col("trace_id").isin(changedTraces:_*))
       complete_traces_that_changed.count()
 
-      val complete_pairs_that_changed = all_pairs
-        .filter(functions.col("trace_id").isin(changedTraces:_*))
+      //      val complete_pairs_that_changed = all_pairs
+      //        .filter(functions.col("trace_id").isin(changedTraces:_*))
 
       complete_traces_that_changed.persist(StorageLevel.MEMORY_AND_DISK)
-      complete_pairs_that_changed.persist(StorageLevel.MEMORY_AND_DISK)
+      //      complete_pairs_that_changed.persist(StorageLevel.MEMORY_AND_DISK)
 
       //extract positions
       val position_constraints = DeclareMining.extract_positions(new_events = new_events, logname = metaData.log_name,
@@ -87,7 +90,7 @@ object declare_mining {
 
       //extract unordered
       val unordered_constraints = DeclareMining.extract_unordered(logname = metaData.log_name, complete_traces_that_changed,
-        complete_pairs_that_changed, bChangedTraces, activity_matrix, support, metaData.traces)
+        bChangedTraces, activity_matrix, support, metaData.traces)
 
       //extract order relations
       val ordered_constraints = DeclareMining.extract_ordered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
@@ -95,7 +98,7 @@ object declare_mining {
 
       //handle negative pairs = pairs that does not appear not even once in the data
       val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
-        all_pairs, activity_matrix)
+        activity_matrix)
 
       val l = ListBuffer[String]()
       //each negative pair wil have 100% support in the constraints not-coexist, exclusive-choice, not succession and not chain-succession
@@ -151,7 +154,7 @@ object declare_mining {
       all_events.unpersist()
       activity_matrix.unpersist()
       complete_traces_that_changed.unpersist()
-      complete_pairs_that_changed.unpersist()
+      //      complete_pairs_that_changed.unpersist()
 
 
     })
