@@ -1,9 +1,6 @@
 package auth.datalab.siesta
 
-import java.sql.Timestamp
-
 object Structs {
-
   case class MetaData(var traces: Long, var events: Long, var pairs: Long,
                       lookback: Int,
                       var has_previous_stored: Boolean,
@@ -16,6 +13,7 @@ object Structs {
   case class Event(event_type:String, ts:String, pos:Int, trace_id:String)
 
   case class PositionConstraint(rule:String, event_type:String, occurrences:Double)
+
   //each activity in how many traces it is contained exactly
   case class ActivityExactly(event_type:String, occurrences: Int, contained:Long)
   case class ExistenceConstraint(rule:String, event_type:String, n: Int, occurrences:Double)
@@ -23,4 +21,6 @@ object Structs {
 
   case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)
 
+  case class BranchedSingleConstraint(rule:String, prefix:String, suffix:String, support:Double)
+  case class BranchedPairConstraint(rule:String, prefix:String, suffix:Array[(String,Double)])
 }

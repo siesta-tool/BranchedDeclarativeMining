@@ -1,6 +1,7 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Event,  PairFull}
+import auth.datalab.siesta.Structs.{Event, PairFull}
+import auth.datalab.siesta.TBDeclare.combine_constraints
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel
@@ -156,6 +157,7 @@ object declare_mining {
       complete_traces_that_changed.unpersist()
       //      complete_pairs_that_changed.unpersist()
 
+      combine_constraints(logname = args(0), support = args(1).toDouble, total_traces = metaData.traces)
 
     })
 
