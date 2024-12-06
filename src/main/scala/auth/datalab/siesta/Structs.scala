@@ -12,7 +12,7 @@ object Structs {
 
   case class Event(event_type:String, ts:String, pos:Int, trace_id:String)
 
-  case class PositionConstraint(rule:String, event_type:String, occurrences:Double)
+  case class PositionConstraint(rule:String, event_type:String, traces:Array[String])
 
   //each activity in how many traces it is contained exactly
   case class ActivityExactly(event_type:String, occurrences: Int, contained:Long)

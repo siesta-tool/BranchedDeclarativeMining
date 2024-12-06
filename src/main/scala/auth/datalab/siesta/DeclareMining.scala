@@ -26,41 +26,61 @@ object DeclareMining {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraint]
     }
 
-    val plusConstraint: Dataset[PositionConstraint] = new_events.map(x => {
+    val plusConstraint = new_events.map(x => {
         if (x.pos == 0) {
-          Some(PositionConstraint("first", x.event_type, 1L))
+          // this is the first event
+          Some(PositionConstraint("first", x.event_type, Array(x.trace_id)))
         }
-        else if (bChangedTraces.value.getOrElse(x.trace_id, (-1, -1))._2 == x.pos) { //this is the last event
-          Some(PositionConstraint("last", x.event_type, 1L))
+        else if (bChangedTraces.value.getOrElse(x.trace_id, (-1, -1))._2 == x.pos) {
+          //this is the last event
+          Some(PositionConstraint("last", x.event_type, Array(x.trace_id)))
         }
         else {
           null
         }
-      }).filter(_.isDefined)
-      .map(_.get)
+      })
+      .filter(_.isDefined)
+      .map(_.value)
+      .rdd
+      .keyBy(x => (x.rule, x.event_type))
+      .reduceByKey((x,y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
+      .map(_._2)
+      .toDS()
 
     val endPosMinus = complete_traces_that_changed
       .filter(x => {
         bChangedTraces.value(x.trace_id)._1 - 1 == x.pos
       })
-      .map(x => PositionConstraint("last", x.event_type, -1L))
-
-    val new_positions_constraints = plusConstraint.union(endPosMinus)
-      .union(previously)
+      .map(x => PositionConstraint("last", x.event_type, Array(x.trace_id)))
       .rdd
       .keyBy(x => (x.rule, x.event_type))
-      .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.occurrences + y.occurrences))
+      .reduceByKey((x,y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
       .map(_._2)
+      .toDS()
+
+    val new_positions_constraints = plusConstraint.union(previously)
+      .rdd
+      .keyBy(x => (x.rule, x.event_type))
+      .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
+      .map(_._2)
+      .filter { posConstraint =>
+        val matchingEndPosMinus = endPosMinus
+          .filter(endPos => endPos.rule == posConstraint.rule && endPos.event_type == posConstraint.event_type)
+          .collect()
+        val tracesInEndPosMinus = matchingEndPosMinus.flatMap(_.traces).toSet
+        !posConstraint.traces.exists(trace => tracesInEndPosMinus.contains(trace))
+      }
+      .toDS()
 
     new_positions_constraints.count()
     new_positions_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-    new_positions_constraints.toDS()
+    new_positions_constraints
       .write
       .mode(SaveMode.Overwrite)
       .parquet(position_path)
 
-    val response = this.extract_all_position_constraints(new_positions_constraints, support, total_traces)
+    val response = this.extract_all_position_constraints(new_positions_constraints.rdd, support, total_traces)
 
     new_positions_constraints.unpersist()
     response
@@ -77,8 +97,7 @@ object DeclareMining {
     val existence_path = s"""s3a://siesta/$logname/declare/existence.parquet/"""
 
     val previously = try {
-      spark.read.parquet(existence_path)
-        .map(x => ActivityExactly(x.getString(0), x.getInt(1), x.getLong(2)))
+      spark.read.parquet(existence_path).as[ActivityExactly]
     } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[ActivityExactly]
     }
@@ -88,8 +107,8 @@ object DeclareMining {
       .rdd
       .groupBy(_.trace_id)
       .flatMap(t => {
-        val added_events = bChangedTraces.value(t._1) //gets starting and ending position of the new events
-
+        //gets starting and ending position of the new events
+        val added_events = bChangedTraces.value(t._1)
         val all_trace: Map[String, Int] = t._2.map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
 
         val previousValues: Map[String, Int] = if (added_events._1 != 0) { //there are previous events from this trace
@@ -393,8 +412,8 @@ object DeclareMining {
 
   def extract_all_position_constraints(constraints: RDD[PositionConstraint], support: Double, total_traces: Long): Array[PositionConstraint] = {
     constraints
-      .filter(x => (x.occurrences / total_traces) >= support)
-      .map(x => PositionConstraint(x.rule, x.event_type, x.occurrences / total_traces))
+      .filter(x => (x.traces.length / total_traces) >= support)
+      .map(x => PositionConstraint(x.rule, x.event_type, x.traces))
       .collect()
   }
 
