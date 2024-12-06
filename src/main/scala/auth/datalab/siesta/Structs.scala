@@ -15,8 +15,8 @@ object Structs {
   case class PositionConstraint(rule:String, event_type:String, traces:Array[String])
 
   //each activity in how many traces it is contained exactly
-  case class ActivityExactly(event_type:String, occurrences: Int, contained:Long)
-  case class ExistenceConstraint(rule:String, event_type:String, n: Int, occurrences:Double)
+  case class ActivityExactly(event_type:String, contained:Long, traces:Array[String])
+  case class ExistenceConstraint(rule:String, event_type:String, n: Int, traces:Array[String])
   case class PairConstraint(rule:String, eventA:String, eventB:String, occurrences:Double)
 
   case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)

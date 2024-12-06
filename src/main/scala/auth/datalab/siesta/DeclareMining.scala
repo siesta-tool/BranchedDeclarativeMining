@@ -21,8 +21,6 @@ object DeclareMining {
 
     val previously = try {
       spark.read.parquet(position_path).as[PositionConstraint]
-      //        .map(x => PositionConstraint(x.getString(0), x.getString(1), x.getDouble(2))).as
-    } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraint]
     }
 
@@ -111,24 +109,28 @@ object DeclareMining {
         val added_events = bChangedTraces.value(t._1)
         val all_trace: Map[String, Int] = t._2.map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
 
-        val previousValues: Map[String, Int] = if (added_events._1 != 0) { //there are previous events from this trace
+        val previousValues: Map[String, Int] = if (added_events._1 != 0) {
+          //there are previous events from this trace
           t._2.filter(_.pos < added_events._1).map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
         } else {
           Map.empty[String, Int]
         }
         val l = ListBuffer[ActivityExactly]()
         all_trace.foreach(aT => {
-          l += ActivityExactly(aT._1, aT._2, 1L)
-          if (previousValues.contains(aT._1)) { // this activity existed at least once in the previous trace
-            l += ActivityExactly(aT._1, previousValues(aT._1), -1L)
+          l += ActivityExactly(aT._1, aT._2, Array(t._1))
+          if (previousValues.contains(aT._1)) {
+            // this activity existed at least once in the previous trace
+            l -= ActivityExactly(aT._1, previousValues(aT._1), Array(t._1))
           }
         })
         l.toList
       })
 
+    // TODO: RECONSIDER
+
     val merged_constraints = changesInConstraints.union(previously.rdd)
-      .keyBy(x => (x.event_type, x.occurrences))
-      .reduceByKey((x, y) => ActivityExactly(x.event_type, x.occurrences, x.contained + y.contained))
+      .keyBy(x => (x.event_type, x.traces))
+      .reduceByKey((x, y) => ActivityExactly(x.event_type, x.contained + y.contained, x.traces ++ y.traces))
       .map(_._2)
       .toDS()
 
@@ -144,6 +146,9 @@ object DeclareMining {
 
     response
   }
+
+
+
 
   def extract_unordered(logname: String, complete_traces_that_changed: Dataset[Event],
                         bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
