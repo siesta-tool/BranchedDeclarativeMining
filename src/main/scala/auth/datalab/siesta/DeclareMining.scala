@@ -20,7 +20,8 @@ object DeclareMining {
     val position_path = s"""s3a://siesta/$logname/declare/position.parquet/"""
 
     val previously = try {
-      spark.read.parquet(position_path).as[PositionConstraint]
+      spark.read.parquet(position_path).as[PositionConstraint] }
+    catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraint]
     }
 
@@ -94,7 +95,7 @@ object DeclareMining {
     //get previous data if exist
     val existence_path = s"""s3a://siesta/$logname/declare/existence.parquet/"""
 
-    val previously = try {
+    var previously = try {
       spark.read.parquet(existence_path).as[ActivityExactly]
     } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[ActivityExactly]
@@ -104,33 +105,47 @@ object DeclareMining {
     val changesInConstraints = complete_traces_that_changed
       .rdd
       .groupBy(_.trace_id)
-      .flatMap(t => {
-        //gets starting and ending position of the new events
-        val added_events = bChangedTraces.value(t._1)
-        val all_trace: Map[String, Int] = t._2.map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
+      .flatMap{ case (id, events) =>
+        // gets first and last position of the new events of the current trace
+        val newEventsBounds: (Int, Int) = bChangedTraces.value(id)
 
-        val previousValues: Map[String, Int] = if (added_events._1 != 0) {
-          //there are previous events from this trace
-          t._2.filter(_.pos < added_events._1).map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
+        // counts each event type's instances in the current trace
+        val newEventInstancesMap: Map[String, Int] = events.map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
+
+        // if the first new event isn't in position 0 in the current trace
+        // then also count the event type occurrences for the previous events
+        val oldEventInstancesMap: Map[String, Int] = if (newEventsBounds._1 != 0) {
+          events.filter(_.pos < newEventsBounds._1).map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
         } else {
           Map.empty[String, Int]
         }
+
         val l = ListBuffer[ActivityExactly]()
-        all_trace.foreach(aT => {
-          l += ActivityExactly(aT._1, aT._2, Array(t._1))
-          if (previousValues.contains(aT._1)) {
-            // this activity existed at least once in the previous trace
-            l -= ActivityExactly(aT._1, previousValues(aT._1), Array(t._1))
+        newEventInstancesMap.foreach{ case (eventType, instances) =>
+          var instances: Int = instances
+
+          // if the eventType existed at least once in the previous trace
+          // then an ActivityExactly constraint has surely been created
+          // and must be eliminated
+          if (oldEventInstancesMap.contains(eventType)) {
+            // count how many instances existed in the old part of the current trace
+            instances += previously.filter(_.event_type == eventType)
+              .filter(_.traces.contains(id)).first().instances
+
+            previously = previously.filter(_.event_type == eventType)
+              .filter(_.traces.contains(id))
+              .map(constraint => {
+                ActivityExactly(constraint.event_type,constraint.instances,constraint.traces.filter(_ != id))
+              })
           }
-        })
+          l += ActivityExactly(eventType, instances, Array(id))
+        }
         l.toList
-      })
+     }
 
-    // TODO: RECONSIDER
-
-    val merged_constraints = changesInConstraints.union(previously.rdd)
-      .keyBy(x => (x.event_type, x.traces))
-      .reduceByKey((x, y) => ActivityExactly(x.event_type, x.contained + y.contained, x.traces ++ y.traces))
+    val merged_constraints = changesInConstraints
+      .keyBy(x => (x.event_type, x.instances))
+      .reduceByKey((x, y) => ActivityExactly(x.event_type, x.instances, x.traces ++ y.traces))
       .map(_._2)
       .toDS()
 
@@ -429,35 +444,41 @@ object DeclareMining {
       .flatMap { case (event_type, activities) =>
         val l = ListBuffer[ExistenceConstraint]()
 
-        val sortedActivities = activities.toList.sortBy(_.occurrences)
-        var cumulativeAbsence = total_traces - activities.map(_.contained).sum
-        var cumulativeExistence = total_traces - activities.map(_.contained).sum
+        val sortedActivities = activities.toList.sortBy(_.instances)
+        var cumulativeAbsence = total_traces - activities.flatMap(_.traces).toSet.size
+        var cumulativeExistence = 0L
 
         sortedActivities.foreach { activity =>
+          val traceCount = activity.traces.distinct.length
 
-          //Exactly constraint
-          if ((activity.contained.toDouble / total_traces) >= support) {
-            l += ExistenceConstraint("exactly", event_type, activity.occurrences, activity.contained.toDouble / total_traces)
+          // Exactly constraint
+          if ((traceCount.toDouble / total_traces) >= support) {
+            l += ExistenceConstraint("exactly", event_type, activity.instances.toInt, activity.traces)
           }
-          //Existence constraint
-          val s = (total_traces - cumulativeExistence).toDouble / total_traces
-          if (s >= support) {
-            l += ExistenceConstraint("existence", event_type, activity.occurrences, s)
+
+          // Existence constraint
+          val existenceSupport = (cumulativeExistence + traceCount).toDouble / total_traces
+          if (existenceSupport >= support) {
+            l += ExistenceConstraint("existence", event_type, activity.instances.toInt, activity.traces)
           }
-          cumulativeExistence += activity.contained
+          cumulativeExistence += traceCount
 
-
-          val as = cumulativeAbsence.toDouble / total_traces
-          if (as >= support) {
-            l += ExistenceConstraint("absence", event_type, activity.occurrences, as)
+          // Absence constraint
+          val absenceSupport = cumulativeAbsence.toDouble / total_traces
+          if (absenceSupport >= support) {
+            l += ExistenceConstraint("absence", event_type, activity.instances.toInt, activity.traces)
           }
-          cumulativeAbsence += activity.contained
-
+          cumulativeAbsence -= traceCount
         }
 
-        l += ExistenceConstraint("absence", event_type, sortedActivities.last.occurrences + 1, 1)
+        // Add final absence constraint
+        if (sortedActivities.nonEmpty) {
+          l += ExistenceConstraint("absence", event_type, sortedActivities.last.instances.toInt + 1, Array.empty)
+        }
+
         l.toList
-      }.collect()
+      }
+      .collect()
   }
 
   def extract_all_unorder_constraints(merge_u: Dataset[(String, Long)], merge_i: Dataset[(String, String, Long)], activity_matrix: RDD[(String, String)], support: Double, total_traces: Long): Array[PairConstraint] = {
