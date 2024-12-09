@@ -276,8 +276,6 @@ object DeclareMining {
     new_pairs.unpersist()
 
     c
-
-
   }
 
   def extract_ordered(logname: String, complete_traces_that_changed: Dataset[Event],
@@ -287,47 +285,52 @@ object DeclareMining {
                       support: Double): Array[PairConstraint] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
-    //get previous data if exist
+    // get previous data if exist
     val order_path = s"""s3a://siesta/$logname/declare/order.parquet/"""
 
     val previously = try {
-      spark.read.parquet(order_path)
-        .map(x => PairConstraint(x.getString(0), x.getString(1), x.getString(2), x.getDouble(3)))
+      spark.read.parquet(order_path).as[PairConstraint]
     } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraint]
     }
 
     val new_ordered_relations = complete_traces_that_changed.rdd
       .groupBy(_.trace_id)
-      .flatMap(t => {
-        val new_pos = bChangedTraces.value(t._1)
-        //activities -> reverse sorted positions of the events that correspond to them
-        val events: Map[String, Seq[Int]] = t._2.map(e => (e.event_type, e.pos))
+      .flatMap{ case (id, events) =>
+        // gets first and last position of the new events of the current trace
+        val newEventBounds = bChangedTraces.value(id)
+
+        // activities -> reverse sorted positions of the events that correspond to them
+        val eventsPositionsMap: Map[String, Seq[Int]] = events.map(e => (e.event_type, e.pos))
           .groupBy(_._1)
           .mapValues(e => e.map(_._2).toSeq.sortWith((a, b) => a > b))
+
         val l = ListBuffer[PairConstraint]()
-        // new events are the ones that will extract the new rules
-        // precedence loop
-        for (i <- new_pos._1 to new_pos._2) {
-          val current_event_type = t._2.toSeq(i).event_type
-          val all_previous = events(current_event_type).filter(x => x < i)
-          val prev = all_previous match {
+
+        // for each event type in the new section of the trace
+        for (i <- newEventBounds._1 to newEventBounds._2) {
+          val current_event_type = events.toSeq(i).event_type
+
+          // find the last type's existence in the old part of it
+          val eventPreviousPositions = eventsPositionsMap(current_event_type).filter(x => x < i)
+          val lastCurrentEventPosition = eventPreviousPositions match {
             case Nil => 0
-            case _ => all_previous.max
+            case _ => eventPreviousPositions.max
           }
+
           // precedence loop
-          events.keySet.filter(x => x != current_event_type)
-            .foreach(activity_a => {
-              val valid_a = events(activity_a)
+          eventsPositionsMap.keySet.filter(x => x != current_event_type)
+            .foreach(activityA => {
+              val activityAPrevPositions = eventsPositionsMap(activityA)
                 .filter(pos_a => pos_a < i)
-              if (valid_a.nonEmpty) {
-                val pos_a = valid_a.max
+              if (activityAPrevPositions.nonEmpty) {
+                val pos_a = activityAPrevPositions.max
                 if (pos_a < i) {
-                  l += PairConstraint("precedence", activity_a, current_event_type, 1.0)
-                  if (pos_a >= prev) {
-                    l += PairConstraint("alternate-precedence", activity_a, current_event_type, 1.0)
+                  l += PairConstraint("precedence", activityA, current_event_type, Array(id))
+                  if (pos_a >= lastCurrentEventPosition) {
+                    l += PairConstraint("alternate-precedence", activityA, current_event_type, Array(id))
                     if (pos_a == i - 1) {
-                      l += PairConstraint("chain-precedence", activity_a, current_event_type, 1.0)
+                      l += PairConstraint("chain-precedence", activityA, current_event_type, Array(id))
                     }
                   }
                 }
@@ -335,17 +338,17 @@ object DeclareMining {
             })
 
           //response loop
-          events.keySet.filter(x => x != current_event_type)
+          eventsPositionsMap.keySet.filter(x => x != current_event_type)
             .foreach(activity_a => {
               var largest = true
-              events(activity_a).foreach(pos_a => {
-                if (pos_a < i && pos_a >= prev) {
-                  l += PairConstraint("response", activity_a, current_event_type, 1.0)
+              eventsPositionsMap(activity_a).foreach(pos_a => {
+                if (pos_a < i && pos_a >= lastCurrentEventPosition) {
+                  l += PairConstraint("response", activity_a, current_event_type, Array(id))
                   if (largest) {
-                    l += PairConstraint("alternate-response", activity_a, current_event_type, 1.0)
+                    l += PairConstraint("alternate-response", activity_a, current_event_type, Array(id))
                     largest = false
                     if (pos_a == i - 1) {
-                      l += PairConstraint("chain-response", activity_a, current_event_type, 1.0)
+                      l += PairConstraint("chain-response", activity_a, current_event_type, Array(id))
                     }
                   }
                 }
@@ -353,18 +356,18 @@ object DeclareMining {
             })
         }
         l.toList
-      })
+      }
       .keyBy(x => (x.rule, x.eventA, x.eventB))
-      .reduceByKey((x, y) => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences + y.occurrences))
+      .reduceByKey((x, y) => PairConstraint(x.rule, x.eventA, x.eventB, x.traces ++ y.traces))
       .map(_._2)
 
-    //merge with previous values if exist
+    // merge with previous values if exist
     val updated_constraints = new_ordered_relations
       .keyBy(x => (x.rule, x.eventA, x.eventB))
       .fullOuterJoin(previously.rdd.keyBy(x => (x.rule, x.eventA, x.eventB)))
       .map(x => PairConstraint(x._1._1, x._1._2, x._1._3,
-        x._2._1.getOrElse(PairConstraint("", "", "", 0L)).occurrences +
-          x._2._2.getOrElse(PairConstraint("", "", "", 0L)).occurrences))
+        x._2._1.getOrElse(PairConstraint("", "", "", Array.empty)).traces ++
+          x._2._2.getOrElse(PairConstraint("", "", "", Array.empty)).traces))
       .toDS()
 
     updated_constraints.count()
@@ -378,7 +381,6 @@ object DeclareMining {
 
     updated_constraints.unpersist()
     constraints
-
   }
 
   def handle_negatives(logname: String, activity_matrix: RDD[(String, String)]): Array[(String, String)] = {
@@ -533,20 +535,17 @@ object DeclareMining {
           })
           .distinct()
           .keyBy(x => (x._1, x._2)))
-      .map(x => PairConstraint("not-chain-succession", x._2._1, x._2._2, 1.0))
+      .map(x => PairConstraint("not-chain-succession", x._2._1, x._2._2, Array.empty))
       .collect()
 
     val remaining = constraints.rdd.flatMap(c => {
         val l = ListBuffer[PairConstraint]()
-        val sup = if (c.rule.contains("response")) {
-          c.occurrences / bUnique_traces_to_event_types.value(c.eventA)
-        } else {
-          c.occurrences / bUnique_traces_to_event_types.value(c.eventB)
-        }
-        l += PairConstraint(c.rule, c.eventA, c.eventB, sup) // add the support to the constraint
+
+        l += PairConstraint(c.rule, c.eventA, c.eventB, c.traces)
         if (c.rule.contains("chain")) {
-          l += PairConstraint("chain-succession", c.eventA, c.eventB, sup)
-          l += PairConstraint("not-chain-succession", c.eventA, c.eventB, 1 - sup)
+          l += PairConstraint("chain-succession", c.eventA, c.eventB, c.traces)
+          l += PairConstraint("not-chain-succession", c.eventA, c.eventB, TAKE ALL TRACES THAT THE EVENT DOES NOT
+            EXIST IN)
         } else if (c.rule.contains("alternate")) {
           l += PairConstraint("alternate-succession", c.eventA, c.eventB, sup)
         } else {
