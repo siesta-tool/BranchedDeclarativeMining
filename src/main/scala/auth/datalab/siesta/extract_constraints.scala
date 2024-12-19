@@ -35,26 +35,26 @@ object extract_constraints {
       //      Position extraction
       val position_path = s"""s3a://siesta/${metaData.log_name}/declare/position.parquet/"""
       val position_state = spark.read.parquet(position_path).as[PositionConstraint]
-      val position_constraints = DeclareMining.extract_all_position_constraints(position_state.rdd, support, metaData.traces)
+      val position_constraints = DeclareMining.extractAllPositionConstraints(position_state.rdd, support, metaData.traces)
 
       //      Existence extraction
       val existence_path = s"""s3a://siesta/${metaData.log_name}/declare/existence.parquet/"""
       val existence_state = spark.read.parquet(existence_path)
         .map(x => ActivityExactly(x.getString(0), x.getInt(1), x.getLong(2)))
-      val existence_constraints = DeclareMining.extract_all_existence_constraints(existence_state, support, metaData.traces)
+      val existence_constraints = DeclareMining.extractAllExistenceConstraints(existence_state, support, metaData.traces)
 
       //      Unordered extraction
       val i_path = s"""s3a://siesta/${metaData.log_name}/declare/unorder/i.parquet/"""
       val u_path = s"""s3a://siesta/${metaData.log_name}/declare/unorder/u.parquet/"""
       val u = spark.read.parquet(u_path).map(x => (x.getString(0), x.getLong(1)))
       val i = spark.read.parquet(i_path).map(x => (x.getString(0), x.getString(1), x.getLong(2)))
-      val unordered_constraints = DeclareMining.extract_all_unorder_constraints(u, i, activity_matrix, support, metaData.traces)
+      val unordered_constraints = DeclareMining.extractAllUnorderedConstraints(u, i, activity_matrix, support, metaData.traces)
 
       // Ordered extraction
       val order_path = s"""s3a://siesta/${metaData.log_name}/declare/order.parquet/"""
       val ordered_state = spark.read.parquet(order_path)
         .map(x => PairConstraint(x.getString(0), x.getString(1), x.getString(2), x.getDouble(3)))
-      val ordered_constraints = DeclareMining.extract_all_ordered_constraints(ordered_state, bEvent_types_occurrences, activity_matrix, support)
+      val ordered_constraints = DeclareMining.extractAllOrderedConstraints(ordered_state, bEvent_types_occurrences, activity_matrix, support)
 
       // Negative pairs
       val negative_path = s"""s3a://siesta/${metaData.log_name}/declare/negatives.parquet/"""

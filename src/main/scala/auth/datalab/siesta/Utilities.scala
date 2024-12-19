@@ -37,8 +37,6 @@ object Utilities {
   }
 
   def get_activity_matrix(event_types_occurrences:scala.collection.Map[String, Long]):RDD[(String,String)]={
-    val spark = SparkSession.builder().getOrCreate()
-
     val keys: Iterable[String] = event_types_occurrences.keys
 
     val cartesianProduct: Iterable[(String, String)] = for {
@@ -47,6 +45,5 @@ object Utilities {
     } yield (key1, key2)
 
     SparkSession.builder().getOrCreate().sparkContext.parallelize(cartesianProduct.toSeq)
-
   }
 }

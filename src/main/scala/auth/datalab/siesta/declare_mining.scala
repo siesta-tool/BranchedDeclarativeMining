@@ -17,6 +17,7 @@ object declare_mining {
     val s3Connector = new S3Connector()
     s3Connector.initialize(args(0))
     val support = args(1).toDouble
+    val branchingPolicy = args(2)
 
     val metaData = s3Connector.get_metadata()
     val spark = SparkSession.builder().getOrCreate()
@@ -37,9 +38,10 @@ object declare_mining {
         .toMap
       val bEvent_types_occurrences = spark.sparkContext.broadcast(event_types_occurrences)
 
+
       //all possible activity pair matrix
       val activity_matrix: RDD[(String, String)] = Utilities.get_activity_matrix(event_types_occurrences)
-      activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
+                                                                  activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
 
       //keep only the recently added events
       val bPrevMining = spark.sparkContext.broadcast(metaData.last_declare_mined)
@@ -85,17 +87,17 @@ object declare_mining {
         complete_traces_that_changed, bChangedTraces, support, metaData.traces)
 
       //extract existence
-      val existence_constraints = DeclareMining.extract_existence(logname = metaData.log_name,
+      val existence_constraints = DeclareMining.extractExistence(logname = metaData.log_name,
         complete_traces_that_changed = complete_traces_that_changed, bChangedTraces = bChangedTraces,
-        support = support, total_traces = metaData.traces)
+        support = support, total_traces = metaData.traces, branchingPolicy)
 
       //extract unordered
-      val unordered_constraints = DeclareMining.extract_unordered(logname = metaData.log_name, complete_traces_that_changed,
-        bChangedTraces, activity_matrix, support, metaData.traces)
+      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, complete_traces_that_changed,
+        bChangedTraces, activity_matrix, support, metaData.traces, branchingPolicy)
 
       //extract order relations
-      val ordered_constraints = DeclareMining.extract_ordered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
-        bEvent_types_occurrences, activity_matrix, support)
+      val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
+        bEvent_types_occurrences, activity_matrix, support, branchingPolicy)
 
       //handle negative pairs = pairs that does not appear not even once in the data
       val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
@@ -117,12 +119,12 @@ object declare_mining {
 
 
       position_constraints.foreach(x => {
-        val formattedDouble = f"${x.occurrences}%.3f"
-        l += s"${x.rule}|${x.event_type}|$formattedDouble\n"
+        val formattedDouble = f"${x.support}%.3f"
+        l += s"${x.rule}|${x.prefix}|$formattedDouble\n"
       })
       existence_constraints.foreach(x => {
-        val formattedDouble = f"${x.occurrences}%.3f"
-        l += s"${x.rule}|${x.event_type}|${x.n}|$formattedDouble\n"
+        val formattedDouble = f"${x.support}%.3f"
+        l += s"${x.rule}|${x.prefix}|${x.suffix}|$formattedDouble\n"
       })
       unordered_constraints.foreach(x => {
         val formattedDouble = f"${x.occurrences}%.3f"
