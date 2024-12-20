@@ -96,6 +96,11 @@ object TBDeclare {
     var suffixes = eventBData // Start with all eventBs
     var uniqueTraces = suffixes.flatMap(_._2).distinct.size // Total unique traces
 
+    var sumOfReductions = 0.0
+    var sumOfReductions2 = 0.0
+    var countOfReductions = 0
+    var reductionStd = 0.0
+
     // Iteratively remove eventBs causing the least reduction in unique traces
     while (suffixes.size > 1) {
       // Find the eventB that causes the smallest reduction in unique traces
@@ -110,8 +115,15 @@ object TBDeclare {
       // Calculate the reduction in unique traces
       val reduction = uniqueTraces - candidateToRemove._3
 
-      // Stop if the reduction exceeds the threshold
-      if (reduction > uniqueTraces.toDouble / 2) {
+      countOfReductions += 1
+      sumOfReductions += reduction
+      sumOfReductions2 += Math.pow(reduction, 2)
+      // Calculate mean and standard deviation of reductions
+      val reductionMean = sumOfReductions / countOfReductions
+      reductionStd = Math.sqrt((sumOfReductions2 / countOfReductions) - Math.pow(reductionMean, 2))
+
+      // If the current reduction exceeds the mean by more than 2.5 times the standard deviation, stop
+      if (reduction > reductionMean + 2.5 * reductionStd) {
         return suffixes // Return the suffixes before the reduction was too large
       }
 
