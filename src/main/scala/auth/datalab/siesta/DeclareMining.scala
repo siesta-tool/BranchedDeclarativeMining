@@ -385,15 +385,15 @@ object DeclareMining {
     //compute constraints using support and collect them
     val constraints = if (policy.isEmpty)
       this.extractAllOrderedConstraints(updated_constraints,
-                                      bUnique_traces_to_event_types,
-                                      activity_matrix,
-                                      support)
+                                        bUnique_traces_to_event_types,
+                                        activity_matrix,
+                                        support)
     else
-      TBDeclare.extractAllOrderConstraints (updated_constraints,
-                                            bUnique_traces_to_event_types,
-                                            activity_matrix,
-                                            support,
-                                            policy)
+      TBDeclare.extractAllOrderedConstraints (updated_constraints,
+                                              bUnique_traces_to_event_types,
+                                              activity_matrix,
+                                              support,
+                                              policy)
 
     updated_constraints.unpersist()
     constraints
@@ -516,7 +516,7 @@ object DeclareMining {
       .distinct()
       .flatMap(x => parseUnorderedConstraints(x, total_traces))
       .filter(x => (x.support / total_traces) >= support)
-      .map(x => Constraint(x.rule, x.prefix, x.suffix, x.support / total_traces))
+      .map(x => Constraint(x.rule, x.activation, x.target, x.support / total_traces))
       .collect()
   }
 
@@ -540,7 +540,6 @@ object DeclareMining {
     l.toList
   }
 
-  // TODO: find what the following actually finds and adjust the TBDeclare.extractAll respectively
   def extractAllOrderedConstraints(constraints: Dataset[PairConstraint],
                                    bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
                                    activity_matrix: RDD[(String, String)],
@@ -580,8 +579,8 @@ object DeclareMining {
         }
         l.toList
       })
-      .keyBy(x => (x.rule, x.prefix, x.suffix))
-      .reduceByKey((x, y) => Constraint(x.rule, x.prefix, x.suffix, x.support * y.support))
+      .keyBy(x => (x.rule, x.activation, x.target))
+      .reduceByKey((x, y) => Constraint(x.rule, x.activation, x.target, x.support * y.support))
       .map(_._2)
       .filter(_.support >= support) //calculate the final filtering at the end
       .collect()

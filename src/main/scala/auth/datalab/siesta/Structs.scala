@@ -23,6 +23,6 @@ object Structs {
 
   case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)
 
-  case class Constraint(rule:String, prefix:String, suffix:String, support:Double)
-  case class TargetBranchedConstraint(rule:String, prefix:String, suffix:Array[String], support:Double)
+  case class Constraint(rule:String, activation:String, target:String, support:Double)
+  case class TargetBranchedConstraint(rule:String, activation:String, targets:Array[String], support:Double)
 }

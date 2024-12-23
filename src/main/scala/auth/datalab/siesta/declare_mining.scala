@@ -120,7 +120,7 @@ object declare_mining {
 
       position_constraints.foreach(x => {
         val formattedDouble = f"${x.support}%.3f"
-        l += s"${x.rule}|${x.prefix}|$formattedDouble\n"
+        l += s"${x.rule}|${x.activation}|$formattedDouble\n"
       })
       existence_constraints.foreach(x => {
         val formattedDouble = f"${x.support}%.3f"
