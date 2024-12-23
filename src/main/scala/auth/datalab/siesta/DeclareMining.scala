@@ -197,7 +197,7 @@ object DeclareMining {
           .map(_.event_type)
           .filter(e => !prevEvents.contains(e))
           .distinct
-          .map(e => (e, 1L)) //mapped to event type,1 (they will be counted later)
+          .map(e => (e, 1L)) //mapped to (event type, 1) (they will be counted later)
       })
       .keyBy(_._1)
       .reduceByKey((a, b) => (a._1, a._2 + b._2))
@@ -286,6 +286,7 @@ object DeclareMining {
                      bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
                      bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
                      activity_matrix: RDD[(String, String)],
+                     total_traces: Long,
                      support: Double,
                      policy: String
                      ): Any = {
@@ -392,6 +393,7 @@ object DeclareMining {
       TBDeclare.extractAllOrderedConstraints (updated_constraints,
                                               bUnique_traces_to_event_types,
                                               activity_matrix,
+                                              total_traces,
                                               support,
                                               policy)
 

@@ -97,7 +97,7 @@ object declare_mining {
 
       //extract order relations
       val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
-        bEvent_types_occurrences, activity_matrix, support, branchingPolicy)
+        bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy)
 
       //handle negative pairs = pairs that does not appear not even once in the data
       val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,

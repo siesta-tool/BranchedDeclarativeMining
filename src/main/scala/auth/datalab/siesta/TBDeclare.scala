@@ -50,31 +50,32 @@ object TBDeclare {
 //  }
 
   // `OR` policy
-  def getORBranchedConstraints(constraints: Dataset[PairConstraint])
+  def getORBranchedConstraints(constraints: Dataset[PairConstraint], totalTraces: Long)
                               (implicit spark: SparkSession): Dataset[TargetBranchedConstraint] = {
     import spark.implicits._
 
-    // Step 1: Explode traces to create individual rows for (rule, eventA, eventB, trace)
+    // Explode traces to create individual rows for (rule, eventA, eventB, trace)
     val exploded = constraints
       .withColumn("trace", explode($"traces"))
       .select($"rule", $"eventA", $"eventB", $"trace")
 
-    // Step 2: Compute unique traces for each (rule, eventA, eventB)
+    // Compute unique traces for each (rule, eventA, eventB)
     val traceCounts = exploded
       .groupBy($"rule", $"eventA", $"eventB")
-      .agg(collect_set($"trace").as("uniqueTraces")) // Collect unique traces
+      .agg(collect_set($"trace").as("uniqueTraces"))
 
-    // Step 3: Group by (rule, eventA), calculate optimal suffixes
+    // Group by (rule, eventA), calculate optimal suffixes
     val grouped = traceCounts
-      .as[(String, String, String, Seq[String])] // Convert to typed Dataset
-      .groupByKey { case (rule, eventA, _, _) => (rule, eventA) } // Group by (rule, eventA)
+      .as[(String, String, String, Seq[String])]
+      .groupByKey { case (rule, eventA, _, _) => (rule, eventA) }
       .mapGroups { case ((rule, eventA), rows) =>
+
         // Create a struct for each target event (eventB) and each list of traces, w.r.t. activation (eventA)
         val eventBData = rows.toSeq.map { case (_, _, eventB, uniqueTraces) =>
           (eventB, uniqueTraces)
         }
 
-        // Step 4: Find the optimal subset of eventBs
+        // Find the optimal subset of eventBs
         val optimalSuffixes = findOptimalSuffixes(eventBData)
 
         // Compute total unique traces for the optimal suffixes
@@ -84,8 +85,8 @@ object TBDeclare {
         TargetBranchedConstraint(
           rule = rule,
           activation = eventA,
-          targets = optimalSuffixes.map(_._1).toArray, // Extract eventBs
-          support = totalUniqueTraces
+          targets = optimalSuffixes.map(_._1).toArray,
+          support = totalUniqueTraces / totalTraces
         )
       }
 
@@ -140,17 +141,18 @@ object TBDeclare {
   //////////////////////////////////////////////////////////////////////
 
   def extractAllOrderedConstraints (constraints: Dataset[PairConstraint],
-                                  bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
-                                  activity_matrix: RDD[(String, String)],
-                                  support: Double,
-                                  policy: String): Array[TargetBranchedConstraint] = {
+                                    bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
+                                    activity_matrix: RDD[(String, String)],
+                                    totalTraces: Long,
+                                    support: Double,
+                                    policy: String): Array[TargetBranchedConstraint] = {
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
     // Refactor the following w.r.t. every policy
     val branchedConstraints: Dataset[TargetBranchedConstraint] = if (policy == "OR") {
-      getORBranchedConstraints(constraints)(spark)
+      getORBranchedConstraints(constraints, totalTraces)(spark)
     } else {
       spark.emptyDataset[TargetBranchedConstraint]
     }
