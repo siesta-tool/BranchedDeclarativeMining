@@ -3,66 +3,25 @@ package auth.datalab.siesta
 import auth.datalab.siesta.Structs.{Constraint, PairConstraint, PositionConstraint, TargetBranchedConstraint}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.{collect_set, countDistinct, explode}
-import org.apache.spark.sql.{Dataset, SparkSession, functions}
+import org.apache.spark.sql.functions.{col, collect_list, collect_set, countDistinct, explode, struct}
+import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession, functions}
 
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
 
 object TBDeclare {
 
-//  def combine_constraints(logname: String, support: Double, total_traces: Long): Dataset[TargetBranchedConstraint]  = {
-//    val spark = SparkSession.builder().getOrCreate()
-//    val rulesToIgnore = Set("last", "first", "existence", "absence", "exactly")
-//
-//    import spark.implicits._
-//    val order_path = s"""s3a://siesta/$logname/declare/order.parquet/"""
-//
-//    try {
-//      spark.read.parquet(order_path)
-//        .map(x => TargetBranchedConstraint(
-//          x.getAs[String]("rule"),
-//          x.getAs[String]("eventA"),
-//          Array((x.getAs[String]("eventB"), x.getAs[Double]("occurrences")))
-//        ))
-//        .rdd
-//        .keyBy(x => (x.rule, x.activation))
-//        // Discard meaningless-for-branching rules
-//        .filter(x => !rulesToIgnore.contains(x._1._1))
-//        // Merge the targets arrays
-//        .reduceByKey((a, b) => TargetBranchedConstraint(
-//          a.rule,
-//          a.activation,
-//          a.targets ++ b.targets
-//        ))
-//        // Keep branches that hold over the support threshold
-//        .map { case ((rule, activation), constraint) =>
-//          if (total_traces > 0)
-//            TargetBranchedConstraint(rule, activation, constraint.targets.filter(_._2 / total_traces >= support))
-//          else
-//            null
-//        }
-//        .filter(!_.targets.isEmpty)
-//        .toDS()
-//    } catch {
-//      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[TargetBranchedConstraint]
-//    }
-//  }
+  //////////////////////////////////////////////////////////////////////
+  //               Policy-based constraints extraction                //
+  //////////////////////////////////////////////////////////////////////
 
-  // `OR` policy
-  def getORBranchedConstraints(constraints: Dataset[PairConstraint], totalTraces: Long)
-                              (implicit spark: SparkSession): Dataset[TargetBranchedConstraint] = {
+  def getORBranchedConstraints(constraints: Dataset[PairConstraint],
+                               totalTraces: Long): Dataset[TargetBranchedConstraint] = {
+    val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
-    // Explode traces to create individual rows for (rule, eventA, eventB, trace)
-    val exploded = constraints
-      .withColumn("trace", explode($"traces"))
-      .select($"rule", $"eventA", $"eventB", $"trace")
-
-    // Compute unique traces for each (rule, eventA, eventB)
-    val traceCounts = exploded
-      .groupBy($"rule", $"eventA", $"eventB")
-      .agg(collect_set($"trace").as("uniqueTraces"))
+    val traceCounts: DataFrame = explodePairConstraints(constraints)
 
     // Group by (rule, eventA), calculate optimal suffixes
     val grouped = traceCounts
@@ -76,7 +35,7 @@ object TBDeclare {
         }
 
         // Find the optimal subset of eventBs
-        val optimalSuffixes = findOptimalSuffixes(eventBData)
+        val optimalSuffixes = findORTargets(eventBData)
 
         // Compute total unique traces for the optimal suffixes
         val totalUniqueTraces = optimalSuffixes.flatMap(_._2).distinct.size.toDouble
@@ -93,7 +52,84 @@ object TBDeclare {
     grouped
   }
 
-  private def findOptimalSuffixes(eventBData: Seq[(String, Seq[String])]): Seq[(String, Seq[String])] = {
+//  def getANDBranchedConstraints(constraints: Dataset[PairConstraint],
+//                                totalTraces: Long): Dataset[TargetBranchedConstraint] = {
+//    val spark = SparkSession.builder().getOrCreate()
+//    import spark.implicits._
+//
+////    val traceCounts: DataFrame = explodePairConstraints(constraints)
+//
+//    // Explode the traces into individual trace IDs
+//    val exploded = constraints.withColumn("trace", explode(col("traces")))
+//
+//    // Group by (rule, eventA) to create a map-like structure
+//    val targetsMap = exploded
+//      .groupBy("rule", "eventA")
+//      .agg(collect_list(struct($"eventB", $"trace")).as("eventBTraces"))
+//
+//    // Define a function to compute the most frequent traces and apply findAndTargetSet
+//    def processGroup(
+//                      rule: String,
+//                      eventA: String,
+//                      eventBTraces: Seq[Row]
+//                    ): Seq[(String, String, Set[String], Double)] = {
+//      val traceGroups = eventBTraces.groupBy(row => row.getString(0)).map {
+//        case (eventB, rows) =>
+//          val traces = rows.map(_.getString(1)).toSet
+//          (eventB, traces)
+//      }.toSeq
+//
+//      // Determine the most frequent traces
+//      val allTraces = traceGroups.flatMap(_._2)
+//      val traceFrequencies = allTraces.groupBy(identity).view.mapValues(_.size)
+//      val maxFrequency = traceFrequencies.values.max
+//      val frequentTraces = traceFrequencies.filter(_._2 == maxFrequency).keys.toSet
+//
+//      // Prepare the targets input for findAndTargetSet
+//      val targets = traceGroups.map { case (eventB, traces) => (eventB, traces) }
+//
+//      // Find AND-Target sets
+//      val targetSets = AndTargetSetFinder.findAndTargetSet(targets, frequentTraces, threshold)
+//
+//      // Compute support and construct the result
+//      targetSets.map { case (eventSet, commonTraces) =>
+//        val support = commonTraces.size.toDouble / totalTraces
+//        (rule, eventA, eventSet, support)
+//      }
+//    }
+//
+//    // Apply the processGroup function to each group
+//    val result = targetsMap.flatMap { row =>
+//      val rule = row.getString(0)
+//      val eventA = row.getString(1)
+//      val eventBTraces = row.getSeqprocessGroup(rule, eventA, eventBTraces)
+//    }
+//
+//    result.toDS()
+//  }
+
+
+  //////////////////////////////////////////////////////////////////////
+  //                Optimal target extraction and helpers             //
+  //////////////////////////////////////////////////////////////////////
+
+  private def explodePairConstraints(constraints: Dataset[PairConstraint]): DataFrame = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    // Explode traces to create individual rows for (rule, eventA, eventB, trace)
+    val exploded = constraints
+      .withColumn("trace", explode($"traces"))
+      .select($"rule", $"eventA", $"eventB", $"trace")
+
+    // Compute unique traces for each (rule, eventA, eventB)
+    val traceCounts = exploded
+      .groupBy($"rule", $"eventA", $"eventB")
+      .agg(collect_set($"trace").as("uniqueTraces"))
+    traceCounts
+  }
+
+  private def findORTargets(eventBData: Seq[(String, Seq[String])]): Seq[(String, Seq[String])] = {
     var suffixes = eventBData // Start with all eventBs
     var uniqueTraces = suffixes.flatMap(_._2).distinct.size // Total unique traces
 
@@ -136,6 +172,56 @@ object TBDeclare {
     suffixes
   }
 
+  private  def findANDTargets(targets: Seq[(String, Set[String])],
+                                frequentTraces: Set[String],
+                                threshold: Int): Seq[(Set[String], Set[String])] = {
+
+    // Filter out the traces that are not in frequentTraces
+    // and keep only targets related to at least one frequentTrace
+    val filteredTargets = targets
+      .map { x => (x._1, x._2.intersect(frequentTraces)) }
+      .filter { x => x._2.nonEmpty }
+
+    // Create event pairs along with their associated trace lists for quicker access later
+    val eventPairs = for {
+      (e1, t1) <- filteredTargets
+      (e2, t2) <- filteredTargets if e1 != e2
+    } yield (Set(e1, e2), t1, t2)
+
+    val combinedTargets = mutable.Buffer.empty[(Set[String], Set[String])]
+    var searchSpace = eventPairs
+
+
+    while (searchSpace.nonEmpty) {
+      // Calculate the support for each event pair concurrently
+      val supportResults = searchSpace.map { case (pair, t1, t2) =>
+        val commonTraces = t1 intersect t2
+        (pair, commonTraces)
+      }
+
+      // Find the pair with the maximum support
+      val maxSupportPair = supportResults.maxBy(_._2.size)
+
+      if (maxSupportPair._2.size >= threshold) {
+        // Expand the search space with new event combinations from maxSupportPair
+        val expandedSearchSpace = {
+          val remainingTargets = filteredTargets.map(_._1).toSet.diff(maxSupportPair._1)
+          remainingTargets.map(newEvent =>
+            (maxSupportPair._1 + newEvent, maxSupportPair._2, filteredTargets.find(_._1 == newEvent).get._2))
+        }
+
+        // Update searchSpace to only contain the new expanded pairs
+        searchSpace = expandedSearchSpace.toSeq
+      } else {
+        // Add the combination with the common traces to the result
+        combinedTargets += (maxSupportPair._1, maxSupportPair._2)
+        searchSpace = Seq.empty // End the loop
+      }
+    }
+
+    combinedTargets.toSeq
+  }
+
   //////////////////////////////////////////////////////////////////////
   //    Extraction of branched Constraints with calculated support    //
   //////////////////////////////////////////////////////////////////////
@@ -150,12 +236,13 @@ object TBDeclare {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
-    // Refactor the following w.r.t. every policy
-    val branchedConstraints: Dataset[TargetBranchedConstraint] = if (policy == "OR") {
-      getORBranchedConstraints(constraints, totalTraces)(spark)
-    } else {
-      spark.emptyDataset[TargetBranchedConstraint]
-    }
+    // Refactor the following w.r.t. policy
+    val branchedConstraints: Dataset[TargetBranchedConstraint] =
+      if (policy == "OR") {
+        getORBranchedConstraints(constraints, totalTraces)
+      } else {
+        spark.emptyDataset[TargetBranchedConstraint]
+      }
 
     val not_chain_succession = activity_matrix.keyBy(x => {(x._1, x._2)})
       // Subtract branched constraints
