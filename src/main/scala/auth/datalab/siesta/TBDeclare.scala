@@ -52,66 +52,75 @@ object TBDeclare {
     grouped
   }
 
-//  def getANDBranchedConstraints(constraints: Dataset[PairConstraint],
-//                                totalTraces: Long): Dataset[TargetBranchedConstraint] = {
-//    val spark = SparkSession.builder().getOrCreate()
-//    import spark.implicits._
-//
-////    val traceCounts: DataFrame = explodePairConstraints(constraints)
-//
-//    // Explode the traces into individual trace IDs
-//    val exploded = constraints.withColumn("trace", explode(col("traces")))
-//
-//    // Group by (rule, eventA) to create a map-like structure
-//    val targetsMap = exploded
-//      .groupBy("rule", "eventA")
-//      .agg(collect_list(struct($"eventB", $"trace")).as("eventBTraces"))
-//
-//    // Define a function to compute the most frequent traces and apply findAndTargetSet
-//    def processGroup(
-//                      rule: String,
-//                      eventA: String,
-//                      eventBTraces: Seq[Row]
-//                    ): Seq[(String, String, Set[String], Double)] = {
-//      val traceGroups = eventBTraces.groupBy(row => row.getString(0)).map {
-//        case (eventB, rows) =>
-//          val traces = rows.map(_.getString(1)).toSet
-//          (eventB, traces)
-//      }.toSeq
-//
-//      // Determine the most frequent traces
-//      val allTraces = traceGroups.flatMap(_._2)
-//      val traceFrequencies = allTraces.groupBy(identity).view.mapValues(_.size)
-//      val maxFrequency = traceFrequencies.values.max
-//      val frequentTraces = traceFrequencies.filter(_._2 == maxFrequency).keys.toSet
-//
-//      // Prepare the targets input for findAndTargetSet
-//      val targets = traceGroups.map { case (eventB, traces) => (eventB, traces) }
-//
-//      // Find AND-Target sets
-//      val targetSets = AndTargetSetFinder.findAndTargetSet(targets, frequentTraces, threshold)
-//
-//      // Compute support and construct the result
-//      targetSets.map { case (eventSet, commonTraces) =>
-//        val support = commonTraces.size.toDouble / totalTraces
-//        (rule, eventA, eventSet, support)
-//      }
-//    }
-//
-//    // Apply the processGroup function to each group
-//    val result = targetsMap.flatMap { row =>
-//      val rule = row.getString(0)
-//      val eventA = row.getString(1)
-//      val eventBTraces = row.getSeqprocessGroup(rule, eventA, eventBTraces)
-//    }
-//
-//    result.toDS()
-//  }
+  def getANDBranchedConstraints(constraints: Dataset[PairConstraint],
+                                totalTraces: Long,
+                                threshold: Double): Dataset[TargetBranchedConstraint] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    val branchedConstraints = mutable.Buffer[TargetBranchedConstraint]()
+
+    // Explode the traces into individual trace IDs
+    val exploded = constraints.withColumn("trace", explode(col("traces")))
+
+    // Group by (rule, eventA) to create a map-like structure
+    val targetsMap = exploded
+      .groupBy("rule", "eventA")
+      .agg(collect_list(struct($"eventB", $"trace")).as("eventBTraces"))
+
+    // Collect grouped data for iteration
+    val groupedData = targetsMap.collect()
+
+    groupedData.foreach { row =>
+      val frequentTraces = computeFrequentTraces(row)
+
+      val targetSuperSet: Seq[(String, Set[String])] = {
+        row.getAs[Seq[Row]]("eventBTraces").map { entry =>
+            val eventB = entry.getAs[String]("eventB")
+            val trace = entry.getAs[String]("trace")
+            (eventB, Set(trace)) // Initialize each trace as a Set
+          }
+          .groupBy(_._1) // Group by eventB
+          .map { case (eventB, entries) =>
+            (eventB, entries.flatMap(_._2).toSet) // Merge sets of traces
+          }
+          .toSeq
+      }
+
+      val andTargets = findANDTargets(targetSuperSet, frequentTraces, threshold)
+
+      // Map results into TargetBranchedConstraint objects
+      andTargets.map { case (targetSet, associatedTraces) =>
+        val support = associatedTraces.size.toDouble / totalTraces
+        val tbConstraint =
+          TargetBranchedConstraint (
+            rule = row.getString(0),
+            activation = row.getString(1),
+            targets = targetSet.toArray,
+            support = support
+          )
+        branchedConstraints += tbConstraint
+      }
+    }
+    spark.createDataset(branchedConstraints)
+  }
 
 
   //////////////////////////////////////////////////////////////////////
   //                Optimal target extraction and helpers             //
   //////////////////////////////////////////////////////////////////////
+
+  private def computeFrequentTraces(row: Row): Set[String] = {
+    val eventBTraces = row.getAs[Seq[Row]]("eventBTraces")
+    // Extract traces from eventBTraces
+    val traces = eventBTraces.map(_.getAs[String]("trace"))
+    // Compute trace frequencies
+    val traceFrequencies = traces.groupBy(identity).mapValues(_.size)
+    // Find the maximum frequency
+    val maxFrequency = traceFrequencies.values.max
+    // Find traces with the maximum frequency
+    traceFrequencies.filter(_._2 == maxFrequency).keys.toSet
+  }
 
   private def explodePairConstraints(constraints: Dataset[PairConstraint]): DataFrame = {
     val spark = SparkSession.builder().getOrCreate()
@@ -174,7 +183,7 @@ object TBDeclare {
 
   private  def findANDTargets(targets: Seq[(String, Set[String])],
                                 frequentTraces: Set[String],
-                                threshold: Int): Seq[(Set[String], Set[String])] = {
+                                threshold: Double): Seq[(Set[String], Set[String])] = {
 
     // Filter out the traces that are not in frequentTraces
     // and keep only targets related to at least one frequentTrace
@@ -219,7 +228,7 @@ object TBDeclare {
       }
     }
 
-    combinedTargets.toSeq
+    combinedTargets
   }
 
   //////////////////////////////////////////////////////////////////////
@@ -240,6 +249,8 @@ object TBDeclare {
     val branchedConstraints: Dataset[TargetBranchedConstraint] =
       if (policy == "OR") {
         getORBranchedConstraints(constraints, totalTraces)
+      } else if (policy == "AND") {
+        getANDBranchedConstraints(constraints, totalTraces, support)
       } else {
         spark.emptyDataset[TargetBranchedConstraint]
       }
