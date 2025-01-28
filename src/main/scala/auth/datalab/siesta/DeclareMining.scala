@@ -20,66 +20,47 @@ object DeclareMining {
     val position_path = s"""s3a://siesta/$logname/declare/position.parquet/"""
 
     val previously = try {
-      spark.read.parquet(position_path).as[PositionConstraint] }
-    catch {
+      spark.read.parquet(position_path).as[PositionConstraint]
+      //        .map(x => PositionConstraint(x.getString(0), x.getString(1), x.getDouble(2))).as
+    } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraint]
     }
 
-    val plusConstraint = new_events.map(x => {
+    val plusConstraint: Dataset[PositionConstraint] = new_events.map(x => {
         if (x.pos == 0) {
-          // this is the first event
-          Some(PositionConstraint("first", x.event_type, Array(x.trace_id)))
+          Some(PositionConstraint("first", x.event_type, 1L))
         }
-        else if (bChangedTraces.value.getOrElse(x.trace_id, (-1, -1))._2 == x.pos) {
-          //this is the last event
-          Some(PositionConstraint("last", x.event_type, Array(x.trace_id)))
+        else if (bChangedTraces.value.getOrElse(x.trace_id, (-1, -1))._2 == x.pos) { //this is the last event
+          Some(PositionConstraint("last", x.event_type, 1L))
         }
         else {
           null
         }
-      })
-      .filter(_.isDefined)
-      .map(_.value)
-      .rdd
-      .keyBy(x => (x.rule, x.event_type))
-      .reduceByKey((x,y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
-      .map(_._2)
-      .toDS()
+      }).filter(_.isDefined)
+      .map(_.get)
 
     val endPosMinus = complete_traces_that_changed
       .filter(x => {
         bChangedTraces.value(x.trace_id)._1 - 1 == x.pos
       })
-      .map(x => PositionConstraint("last", x.event_type, Array(x.trace_id)))
-      .rdd
-      .keyBy(x => (x.rule, x.event_type))
-      .reduceByKey((x,y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
-      .map(_._2)
-      .toDS()
+      .map(x => PositionConstraint("last", x.event_type, -1L))
 
-    val new_positions_constraints = plusConstraint.union(previously)
+    val new_positions_constraints = plusConstraint.union(endPosMinus)
+      .union(previously)
       .rdd
       .keyBy(x => (x.rule, x.event_type))
-      .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
+      .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.occurrences + y.occurrences))
       .map(_._2)
-      .filter { posConstraint =>
-        val matchingEndPosMinus = endPosMinus
-          .filter(endPos => endPos.rule == posConstraint.rule && endPos.event_type == posConstraint.event_type)
-          .collect()
-        val tracesInEndPosMinus = matchingEndPosMinus.flatMap(_.traces).toSet
-        !posConstraint.traces.exists(trace => tracesInEndPosMinus.contains(trace))
-      }
-      .toDS()
 
     new_positions_constraints.count()
     new_positions_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-    new_positions_constraints
+    new_positions_constraints.toDS()
       .write
       .mode(SaveMode.Overwrite)
       .parquet(position_path)
 
-    val response = this.extractAllPositionConstraints(new_positions_constraints.rdd, support, total_traces)
+    val response = this.extractAllPositionConstraints(new_positions_constraints, support, total_traces)
 
     new_positions_constraints.unpersist()
     response
@@ -88,7 +69,7 @@ object DeclareMining {
 
   def extractExistence(logname: String, complete_traces_that_changed: Dataset[Event],
                        bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
-                       support: Double, total_traces: Long, policy: String): Any = {
+                       support: Double, total_traces: Long, policy: String): Array[Constraint] = {
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
@@ -121,8 +102,8 @@ object DeclareMining {
         }
 
         val l = ListBuffer[ActivityExactly]()
-        newEventInstancesMap.foreach{ case (eventType, instances) =>
-          var instances: Int = instances
+        newEventInstancesMap.foreach{ case (eventType, inst) =>
+          var instances: Long = inst
 
           // if the eventType existed at least once in the previous trace
           // then an ActivityExactly constraint has surely been created
@@ -168,7 +149,7 @@ object DeclareMining {
   def extractUnordered(logname: String, complete_traces_that_changed: Dataset[Event],
                        bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
                        activity_matrix: RDD[(String, String)],
-                       support: Double, total_traces: Long, policy: String): Any = {
+                       support: Double, total_traces: Long, policy: String): Either[Array[Constraint], Array[TargetBranchedConstraint]] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     //get previous U[x] if exist
@@ -271,9 +252,9 @@ object DeclareMining {
     merge_i.write.mode(SaveMode.Overwrite).parquet(i_path)
 
     val c = if (policy.isEmpty)
-      this.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces)
+      Left(this.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
     else
-      TBDeclare.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces)
+      Right(TBDeclare.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
 
     merge_u.unpersist()
     merge_i.unpersist()
@@ -289,7 +270,7 @@ object DeclareMining {
                      total_traces: Long,
                      support: Double,
                      policy: String
-                     ): Any = {
+                     ): Either[Array[Constraint], Array[TargetBranchedConstraint]] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     // get previous data if exist
@@ -300,6 +281,7 @@ object DeclareMining {
     } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraint]
     }
+
 
     val new_ordered_relations = complete_traces_that_changed.rdd
       .groupBy(_.trace_id)
@@ -385,17 +367,17 @@ object DeclareMining {
 
     //compute constraints using support and collect them
     val constraints = if (policy.isEmpty)
-      this.extractAllOrderedConstraints(updated_constraints,
+      Left(this.extractAllOrderedConstraints(updated_constraints,
                                         bUnique_traces_to_event_types,
                                         activity_matrix,
-                                        support)
+                                        support))
     else
-      TBDeclare.extractAllOrderedConstraints (updated_constraints,
+      Right(TBDeclare.extractAllOrderedConstraints (updated_constraints,
                                               bUnique_traces_to_event_types,
                                               activity_matrix,
                                               total_traces,
                                               support,
-                                              policy)
+                                              policy))
 
     updated_constraints.unpersist()
     constraints
@@ -436,8 +418,8 @@ object DeclareMining {
                                     support: Double,
                                     total_traces: Long): Array[Constraint] = {
     constraints
-      .filter(x => (x.traces.length.toDouble / total_traces) >= support)
-      .map(x => Constraint(x.rule, x.event_type, "", x.traces.length.toDouble / total_traces))
+      .filter(x => (x.occurrences / total_traces) >= support)
+      .map(x => Constraint(x.rule, x.event_type, "", x.occurrences / total_traces))
       .collect()
   }
 

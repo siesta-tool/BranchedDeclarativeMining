@@ -48,7 +48,7 @@ object TBDeclare {
           support = totalUniqueTraces / totalTraces
         )
       }
-
+    grouped.foreach{ x => if (x.targets.length > 2) println(x.toString) }
     grouped
   }
 
@@ -87,6 +87,8 @@ object TBDeclare {
           .toSeq
       }
 
+
+
       val andTargets = findANDTargets(targetSuperSet, frequentTraces, threshold)
 
       // Map results into TargetBranchedConstraint objects
@@ -102,7 +104,9 @@ object TBDeclare {
         branchedConstraints += tbConstraint
       }
     }
-    spark.createDataset(branchedConstraints)
+    val bc = spark.createDataset(branchedConstraints)
+    bc.show()
+    bc
   }
 
 
@@ -191,6 +195,14 @@ object TBDeclare {
       .map { x => (x._1, x._2.intersect(frequentTraces)) }
       .filter { x => x._2.nonEmpty }
 
+    for (x <- filteredTargets) {
+      for (y <- targets) {
+        if (x._1 == y._1) {
+          println(x._1 + " " + x._2.size + " " + y._2.size)
+        }
+      }
+    }
+
     // Create event pairs along with their associated trace lists for quicker access later
     val eventPairs = for {
       (e1, t1) <- filteredTargets
@@ -199,7 +211,6 @@ object TBDeclare {
 
     val combinedTargets = mutable.Buffer.empty[(Set[String], Set[String])]
     var searchSpace = eventPairs
-
 
     while (searchSpace.nonEmpty) {
       // Calculate the support for each event pair concurrently
@@ -212,6 +223,7 @@ object TBDeclare {
       val maxSupportPair = supportResults.maxBy(_._2.size)
 
       if (maxSupportPair._2.size >= threshold) {
+        combinedTargets += Tuple2(maxSupportPair._1, maxSupportPair._2)
         // Expand the search space with new event combinations from maxSupportPair
         val expandedSearchSpace = {
           val remainingTargets = filteredTargets.map(_._1).toSet.diff(maxSupportPair._1)
@@ -222,14 +234,73 @@ object TBDeclare {
         // Update searchSpace to only contain the new expanded pairs
         searchSpace = expandedSearchSpace.toSeq
       } else {
-        // Add the combination with the common traces to the result
-        combinedTargets += (maxSupportPair._1, maxSupportPair._2)
         searchSpace = Seq.empty // End the loop
       }
     }
 
     combinedTargets
   }
+
+  private def findXORTargets(targets: Seq[(String, Set[String])],
+                             frequentTraces: Set[String],
+                             threshold: Double): Seq[(Set[String], Set[String])] = {
+
+    // Assign a unique index to each trace in frequentTraces
+    val traceToIndex: Map[String, Int] = frequentTraces.toSeq.zipWithIndex.toMap
+    val indexToTrace: Map[Int, String] = traceToIndex.map(_.swap)
+
+    // Convert each target's trace set to a bitmap
+    val filteredTargets = targets
+      .map { case (target, traces) =>
+        val bitmap = new java.util.BitSet()
+        traces.intersect(frequentTraces).foreach { trace =>
+          bitmap.set(traceToIndex(trace))
+        }
+        (target, bitmap)
+      }
+      .filter { case (_, bitmap) => !bitmap.isEmpty }
+
+    // Create event pairs along with their associated bitmaps for quicker access later
+    val eventPairs = for {
+      (e1, b1) <- filteredTargets
+      (e2, b2) <- filteredTargets if e1 != e2
+    } yield (Set(e1, e2), b1, b2)
+
+    val combinedTargets = mutable.Buffer.empty[(Set[String], Set[String])]
+    var searchSpace = eventPairs
+
+    while (searchSpace.nonEmpty) {
+      // Calculate the exclusive traces for each event pair concurrently
+      val exclusiveResults = searchSpace.map { case (pair, b1, b2) =>
+        val exclusiveBitmap = new java.util.BitSet()
+        exclusiveBitmap.or(b1)
+        exclusiveBitmap.xor(b2)
+        (pair, exclusiveBitmap)
+      }
+
+      // Find the pair with the maximum exclusive traces
+      val maxExclusivePair = exclusiveResults.maxBy { case (_, bitmap) => bitmap.cardinality() }
+
+      if (maxExclusivePair._2.cardinality() >= threshold) {
+        combinedTargets += Tuple2(maxExclusivePair._1, maxExclusivePair._2.stream().toArray.map(indexToTrace).toSet)
+        // Expand the search space with new event combinations from maxExclusivePair
+        val expandedSearchSpace = {
+          val remainingTargets = filteredTargets.map(_._1).toSet.diff(maxExclusivePair._1)
+          remainingTargets.flatMap { newEvent =>
+            val newEventBitmap = filteredTargets.find(_._1 == newEvent).get._2
+              Some((maxExclusivePair._1 + newEvent, maxExclusivePair._2, newEventBitmap))
+          }
+        }
+        // Update searchSpace to only contain the new expanded pairs
+        searchSpace = expandedSearchSpace.toSeq
+      } else {
+        searchSpace = Seq.empty
+      }
+    }
+
+    combinedTargets
+  }
+
 
   //////////////////////////////////////////////////////////////////////
   //    Extraction of branched Constraints with calculated support    //
@@ -319,5 +390,7 @@ object TBDeclare {
 
   def extractAllUnorderedConstraints(merge_u: Dataset[(String, Long)], merge_i: Dataset[(String, String, Long)],
                                      activity_matrix: RDD[(String, String)], support: Double, total_traces: Long)
-  : Any = { }
+  : Array[TargetBranchedConstraint] = {
+    Array.empty[auth.datalab.siesta.Structs.TargetBranchedConstraint]
+  }
 }

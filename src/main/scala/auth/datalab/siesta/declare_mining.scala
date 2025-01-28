@@ -1,7 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Event, PairFull}
-import auth.datalab.siesta.TBDeclare.combine_constraints
+import auth.datalab.siesta.Structs.Event
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel
@@ -17,7 +16,7 @@ object declare_mining {
     val s3Connector = new S3Connector()
     s3Connector.initialize(args(0))
     val support = args(1).toDouble
-    val branchingPolicy = args(2)
+    val branchingPolicy = if (args.length <= 2) "" else args(2)
 
     val metaData = s3Connector.get_metadata()
     val spark = SparkSession.builder().getOrCreate()
@@ -25,8 +24,8 @@ object declare_mining {
       import spark.implicits._
       //extract all events
       val all_events: Dataset[Event] = s3Connector.get_events_sequence_table()
-
       all_events.persist(StorageLevel.MEMORY_AND_DISK)
+
 
       //extract event_types -> #occurrences
       val event_types_occurrences: scala.collection.Map[String, Long] = all_events
@@ -41,7 +40,7 @@ object declare_mining {
 
       //all possible activity pair matrix
       val activity_matrix: RDD[(String, String)] = Utilities.get_activity_matrix(event_types_occurrences)
-                                                                  activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
+      activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
 
       //keep only the recently added events
       val bPrevMining = spark.sparkContext.broadcast(metaData.last_declare_mined)
@@ -51,7 +50,8 @@ object declare_mining {
             true
           } else {
             // the events that//    new_events.show() we need to keep are after the previous timestamp
-            Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
+//            Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
+            true  //TODO: replace line with the above for production
           }
         })
 
@@ -71,6 +71,7 @@ object declare_mining {
       val bChangedTraces = spark.sparkContext.broadcast(changed_traces)
 
       val changedTraces = bChangedTraces.value.keys.toSeq
+
       //maintain from the original events those that belong to a trace that changed
       val complete_traces_that_changed = all_events
         .filter(functions.col("trace_id").isin(changedTraces:_*))
@@ -92,30 +93,30 @@ object declare_mining {
         support = support, total_traces = metaData.traces, branchingPolicy)
 
       //extract unordered
-      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, complete_traces_that_changed,
-        bChangedTraces, activity_matrix, support, metaData.traces, branchingPolicy)
+//      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, complete_traces_that_changed,
+//        bChangedTraces, activity_matrix, support, metaData.traces, branchingPolicy)
 
       //extract order relations
       val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
         bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy)
 
       //handle negative pairs = pairs that does not appear not even once in the data
-      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
-        activity_matrix)
+//      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
+//        activity_matrix)
 
       val l = ListBuffer[String]()
       //each negative pair wil have 100% support in the constraints not-coexist, exclusive-choice, not succession and not chain-succession
-      negative_pairs.foreach(x => {
-        //      l+=s"not-chain-succession|${x._1}|${x._2}|1.000\n"
-        l += s"not-succession|${x._1}|${x._2}|1.000\n"
-      })
-      negative_pairs.filter(x => x._1 < x._2).foreach(x => {
-        if (negative_pairs.contains((x._2, x._1))) {
-          l += s"not co-existence|${x._1}|${x._2}|1.000\n"
-          l += s"exclusive choice|${x._1}|${x._2}|1.000\n"
-        }
-
-      })
+//      negative_pairs.foreach(x => {
+//        //      l+=s"not-chain-succession|${x._1}|${x._2}|1.000\n"
+//        l += s"not-succession|${x._1}|${x._2}|1.000\n"
+//      })
+//      negative_pairs.filter(x => x._1 < x._2).foreach(x => {
+//        if (negative_pairs.contains((x._2, x._1))) {
+//          l += s"not co-existence|${x._1}|${x._2}|1.000\n"
+//          l += s"exclusive choice|${x._1}|${x._2}|1.000\n"
+//        }
+//
+//      })
 
 
       position_constraints.foreach(x => {
@@ -124,16 +125,23 @@ object declare_mining {
       })
       existence_constraints.foreach(x => {
         val formattedDouble = f"${x.support}%.3f"
-        l += s"${x.rule}|${x.prefix}|${x.suffix}|$formattedDouble\n"
+        l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
       })
-      unordered_constraints.foreach(x => {
-        val formattedDouble = f"${x.occurrences}%.3f"
-        l += s"${x.rule}|${x.eventA}|${x.eventB}|$formattedDouble\n"
-      })
-      ordered_constraints.foreach(x => {
-        val formattedDouble = f"${x.occurrences}%.3f"
-        l += s"${x.rule}|${x.eventA}|${x.eventB}|$formattedDouble\n"
-      })
+//      unordered_constraints.foreach(x => {
+//        val formattedDouble = f"${x.occurrences}%.3f"
+//        l += s"${x.rule}|${x.eventA}|${x.eventB}|$formattedDouble\n"
+//      })
+
+      ordered_constraints match {
+        case Right(x) => x.foreach(x => {
+          val formattedDouble = f"${x.support}%.3f"
+          l += s"${x.rule}|${x.activation}|${x.targets.mkString("Array(", ", ", ")")}|$formattedDouble\n"
+        })
+        case Left(x) => x.foreach(x => {
+          val formattedDouble = f"${x.support}%.3f"
+          l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
+        })
+      }
 
       val file = "output_first.txt"
       val writer = new BufferedWriter(new FileWriter(file))
@@ -152,15 +160,13 @@ object declare_mining {
         metaData.last_declare_mined = last_ts.toString
         s3Connector.write_metadata(metaData)
       }
+
       //TODO: change support/ total traces to broadcasted variables
 
       all_events.unpersist()
       activity_matrix.unpersist()
       complete_traces_that_changed.unpersist()
       //      complete_pairs_that_changed.unpersist()
-
-      combine_constraints(logname = args(0), support = args(1).toDouble, total_traces = metaData.traces)
-
     })
 
   }

@@ -12,7 +12,8 @@ object Structs {
 
   case class Event(event_type:String, ts:String, pos:Int, trace_id:String)
 
-  case class PositionConstraint(rule:String, event_type:String, traces:Array[String])
+//  case class PositionConstraint(rule:String, event_type:String, traces:Array[String])
+  case class PositionConstraint(rule:String, event_type:String, occurrences:Long)
 
   // each activity existed exactly <instances> times in these <traces>
   case class ActivityExactly(event_type:String, instances:Long, traces:Array[String])
@@ -23,6 +24,6 @@ object Structs {
 
   case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)
 
-  case class Constraint(rule:String, activation:String, target:String, support:Double)
-  case class TargetBranchedConstraint(rule:String, activation:String, targets:Array[String], support:Double)
+  case class Constraint(rule:String, activation:String, target:String, support:Double) extends Serializable
+  case class TargetBranchedConstraint(rule:String, activation:String, targets:Array[String], support:Double) extends Serializable
 }
