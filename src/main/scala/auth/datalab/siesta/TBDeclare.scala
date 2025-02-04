@@ -48,13 +48,14 @@ object TBDeclare {
           support = totalUniqueTraces / totalTraces
         )
       }
-    grouped.foreach{ x => if (x.targets.length > 2) println(x.toString) }
+//    grouped.foreach{ x => if (x.targets.length > 2) println(x.toString) }
     grouped
   }
 
   def getANDBranchedConstraints(constraints: Dataset[PairConstraint],
                                 totalTraces: Long,
-                                threshold: Double): Dataset[TargetBranchedConstraint] = {
+                                threshold: Double,
+                                xor: Boolean = false): Dataset[TargetBranchedConstraint] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -109,6 +110,11 @@ object TBDeclare {
     bc
   }
 
+  def getXORBranchedConstraints(constraints: Dataset[PairConstraint],
+                                totalTraces: Long,
+                                threshold: Double): Dataset[TargetBranchedConstraint] = {
+    getANDBranchedConstraints(constraints,totalTraces,threshold,xor=true)
+  }
 
   //////////////////////////////////////////////////////////////////////
   //                Optimal target extraction and helpers             //
