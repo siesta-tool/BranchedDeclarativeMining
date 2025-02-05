@@ -90,10 +90,11 @@ object TBDeclare {
 
 
 
-      val andTargets = findANDTargets(targetSuperSet, frequentTraces, threshold)
+      val Targets = if (xor) findXORTargets(targetSuperSet, frequentTraces, threshold)
+                    else findANDTargets(targetSuperSet, frequentTraces, threshold)
 
       // Map results into TargetBranchedConstraint objects
-      andTargets.map { case (targetSet, associatedTraces) =>
+      Targets.map { case (targetSet, associatedTraces) =>
         val support = associatedTraces.size.toDouble / totalTraces
         val tbConstraint =
           TargetBranchedConstraint (
@@ -328,6 +329,8 @@ object TBDeclare {
         getORBranchedConstraints(constraints, totalTraces)
       } else if (policy == "AND") {
         getANDBranchedConstraints(constraints, totalTraces, support)
+      } else if (policy == "XOR") {
+        getXORBranchedConstraints(constraints, totalTraces, support)
       } else {
         spark.emptyDataset[TargetBranchedConstraint]
       }
