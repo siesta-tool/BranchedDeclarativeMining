@@ -20,16 +20,6 @@ WORKDIR /app
 RUN sbt clean assembly
 RUN mv target/scala-2.12/DeclareMiningIncrementally-assembly-0.1.0-SNAPSHOT.jar declare.jar
 
-FROM builder AS preprocess
-RUN apt-get install git
-
-WORKDIR /app
-RUN git clone -b last_checked_partition https://github.com/mavroudo/SequenceDetectionPreprocess.git
-WORKDIR /app/SequenceDetectionPreprocess
-RUN sbt clean assembly
-RUN ls target/scala-2.12/
-RUN mv target/scala-2.12/sequencedetectionpreprocess-assembly-0.1.jar preprocess.jar
-
 FROM openjdk:11 AS execution
 RUN apt-get update && apt-get install -y gnupg2 curl procps
 
@@ -41,7 +31,6 @@ WORKDIR /app
 RUN mkdir /app/output
 RUN mkdir /tmp/spark-events
 COPY --from=declare /app/declare.jar /app/declare.jar
-COPY --from=preprocess /app/SequenceDetectionPreprocess/preprocess.jar /app/preprocess.jar
 COPY evaluation/incremental_evaluation/script.sh /app/script.sh
 
 CMD ["tail","-f","/dev/null"]

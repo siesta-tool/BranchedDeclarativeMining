@@ -14,9 +14,9 @@ object declare_mining {
   def main(args: Array[String]): Unit = {
 
     val s3Connector = new S3Connector()
-    s3Connector.initialize(args(0))
     val support = args(1).toDouble
     val branchingPolicy = if (args.length <= 2) "" else args(2)
+    val branchingBound = if (args.length <= 3) 0 else Integer.valueOf(args(3)).intValue()
 
     val metaData = s3Connector.get_metadata()
     val spark = SparkSession.builder().getOrCreate()
@@ -55,8 +55,8 @@ object declare_mining {
           }
         })
 
-      println(new_events.count())
-      println(bPrevMining.value)
+//      println(new_events.count())
+//      println(bPrevMining.value)
 
       //maintain the traces that changed
       val changed_traces: scala.collection.Map[String, (Int, Int)] = new_events
@@ -84,13 +84,13 @@ object declare_mining {
       //      complete_pairs_that_changed.persist(StorageLevel.MEMORY_AND_DISK)
 
       //extract positions
-      val position_constraints = DeclareMining.extract_positions(new_events = new_events, logname = metaData.log_name,
-        complete_traces_that_changed, bChangedTraces, support, metaData.traces)
-
-      //extract existence
-      val existence_constraints = DeclareMining.extractExistence(logname = metaData.log_name,
-        complete_traces_that_changed = complete_traces_that_changed, bChangedTraces = bChangedTraces,
-        support = support, total_traces = metaData.traces, branchingPolicy)
+//      val position_constraints = DeclareMining.extract_positions(new_events = new_events, logname = metaData.log_name,
+//        complete_traces_that_changed, bChangedTraces, support, metaData.traces)
+//
+//      //extract existence
+//      val existence_constraints = DeclareMining.extractExistence(logname = metaData.log_name,
+//        complete_traces_that_changed = complete_traces_that_changed, bChangedTraces = bChangedTraces,
+//        support = support, total_traces = metaData.traces, branchingPolicy)
 
       //extract unordered
 //      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, complete_traces_that_changed,
@@ -98,7 +98,7 @@ object declare_mining {
 
       //extract order relations
       val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
-        bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy)
+        bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy, branchingBound)
 
       //handle negative pairs = pairs that does not appear not even once in the data
 //      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
@@ -119,14 +119,14 @@ object declare_mining {
 //      })
 
 
-      position_constraints.foreach(x => {
-        val formattedDouble = f"${x.support}%.3f"
-        l += s"${x.rule}|${x.activation}|$formattedDouble\n"
-      })
-      existence_constraints.foreach(x => {
-        val formattedDouble = f"${x.support}%.3f"
-        l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
-      })
+//      position_constraints.foreach(x => {
+//        val formattedDouble = f"${x.support}%.3f"
+//        l += s"${x.rule}|${x.activation}|$formattedDouble\n"
+//      })
+//      existence_constraints.foreach(x => {
+//        val formattedDouble = f"${x.support}%.3f"
+//        l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
+//      })
 //      unordered_constraints.foreach(x => {
 //        val formattedDouble = f"${x.occurrences}%.3f"
 //        l += s"${x.rule}|${x.eventA}|${x.eventB}|$formattedDouble\n"
@@ -148,18 +148,18 @@ object declare_mining {
       l.toList.foreach(writer.write)
       writer.close()
 
-      if (!new_events.isEmpty) {
-        val last_ts = new_events.rdd
-          .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => {
-            if (x.after(y)) {
-              x
-            } else {
-              y
-            }
-          })
-        metaData.last_declare_mined = last_ts.toString
-        s3Connector.write_metadata(metaData)
-      }
+//      if (!new_events.isEmpty) {
+//        val last_ts = new_events.rdd
+//          .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => {
+//            if (x.after(y)) {
+//              x
+//            } else {
+//              y
+//            }
+//          })
+//        metaData.last_declare_mined = last_ts.toString
+//        s3Connector.write_metadata(metaData)
+//      }
 
       //TODO: change support/ total traces to broadcasted variables
 

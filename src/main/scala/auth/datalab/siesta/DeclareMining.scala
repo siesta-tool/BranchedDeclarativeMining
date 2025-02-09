@@ -269,7 +269,8 @@ object DeclareMining {
                      activity_matrix: RDD[(String, String)],
                      total_traces: Long,
                      support: Double,
-                     policy: String
+                     policy: String,
+                     branchingBound: Int = 0
                      ): Either[Array[Constraint], Array[TargetBranchedConstraint]] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
@@ -367,7 +368,7 @@ object DeclareMining {
 
     //compute constraints using support and collect them
     val constraints = if (policy.isEmpty)
-      Left(this.extractAllOrderedConstraints(updated_constraints,
+      Left(this.extractAllOrderedConstraints (updated_constraints,
                                         bUnique_traces_to_event_types,
                                         activity_matrix,
                                         support))
@@ -377,7 +378,8 @@ object DeclareMining {
                                               activity_matrix,
                                               total_traces,
                                               support,
-                                              policy))
+                                              policy,
+                                              branchingBound))
 
     updated_constraints.unpersist()
     constraints
