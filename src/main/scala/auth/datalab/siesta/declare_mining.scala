@@ -14,6 +14,7 @@ object declare_mining {
   def main(args: Array[String]): Unit = {
 
     val s3Connector = new S3Connector()
+    s3Connector.initialize(args(0))
     val support = args(1).toDouble
     val branchingPolicy = if (args.length <= 2) "" else args(2)
     val branchingBound = if (args.length <= 3) 0 else Integer.valueOf(args(3)).intValue()

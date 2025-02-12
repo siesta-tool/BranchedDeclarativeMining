@@ -21,7 +21,7 @@ class S3Connector {
     this.logname = logname
     lazy val spark = SparkSession.builder()
       .appName("Declare extraction")
-            .master("local[*]")
+      .master("local[*]")
       .getOrCreate()
 
     val s3accessKeyAws = Utilities.readEnvVariable("s3accessKeyAws")

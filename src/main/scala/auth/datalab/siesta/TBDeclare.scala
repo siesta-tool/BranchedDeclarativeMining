@@ -34,7 +34,7 @@ object TBDeclare {
         }
 
         // Find the optimal subset of eventBs
-        val optimalResult = findORTargets(eventBData, threshold = 0.0, branchingBound) // Ensure threshold is passed
+        val optimalResult = findORTargets(eventBData, 0, branchingBound) // Ensure threshold is passed
 
         // Extract targets and traces from the result
         val optimalTargets = optimalResult.flatMap(_._1) // Extract event names
@@ -95,7 +95,7 @@ object TBDeclare {
 
 
 
-      val Targets = if (xor) findXORTargets(targetSuperSet, frequentTraces, threshold, branchingBound)
+      val Targets = if (xor) findXORTargets(targetSuperSet, frequentTraces, threshold * totalTraces, branchingBound)
                     else findANDTargets(targetSuperSet, frequentTraces, threshold, branchingBound)
 
       // Map results into TargetBranchedConstraint objects
@@ -205,54 +205,67 @@ object TBDeclare {
     Seq((targetSuperSet, traceCoverage))
   }
 
+  private def findANDTargets(targets: Seq[(String, Set[String])],
+                             frequentTraces: Set[String],
+                             threshold: Double,
+                             branchingBound: Int = 0): Seq[(Set[String], Set[String])] = {
 
-  private  def findANDTargets(targets: Seq[(String, Set[String])],
-                                frequentTraces: Set[String],
-                                threshold: Double,
-                                branchingBound: Int = 0): Seq[(Set[String], Set[String])] = {
+    // Assign a unique index to each trace in frequentTraces
+    val traceToIndex: Map[String, Int] = frequentTraces.toSeq.zipWithIndex.toMap
+    val indexToTrace: Map[Int, String] = traceToIndex.map(_.swap)
 
-    // Filter out the traces that are not in frequentTraces
-    // and keep only targets related to at least one frequentTrace
+    // Convert each target's trace set to a bitmap
     val filteredTargets = targets
-      .map { x => (x._1, x._2.intersect(frequentTraces)) }
-      .filter { x => x._2.nonEmpty }
+      .map { case (target, traces) =>
+        val bitmap = new java.util.BitSet()
+        traces.intersect(frequentTraces).foreach { trace =>
+          bitmap.set(traceToIndex(trace))
+        }
+        (target, bitmap)
+      }
+      .filter { case (_, bitmap) => !bitmap.isEmpty }
 
-    // Create event pairs along with their associated trace lists for quicker access later
+    // Create event pairs along with their associated bitmaps for quicker access later
     val eventPairs = for {
-      (e1, t1) <- filteredTargets
-      (e2, t2) <- filteredTargets if e1 != e2
-    } yield (Set(e1, e2), t1, t2)
+      (e1, b1) <- filteredTargets
+      (e2, b2) <- filteredTargets if e1 != e2
+    } yield (Set(e1, e2), b1, b2)
 
     val combinedTargets = mutable.Buffer.empty[(Set[String], Set[String])]
     var searchSpace = eventPairs
 
     while (searchSpace.nonEmpty) {
       // Calculate the support for each event pair concurrently
-      val supportResults = searchSpace.map { case (pair, t1, t2) =>
-        val commonTraces = t1 intersect t2
-        (pair, commonTraces)
+      val supportResults = searchSpace.map { case (pair, b1, b2) =>
+        val commonBitmap = new java.util.BitSet()
+        commonBitmap.or(b1)
+        commonBitmap.and(b2) // Intersect bitmaps to get common traces
+        (pair, commonBitmap)
       }
 
       // Find the pair with the maximum support
-      val maxSupportPair = supportResults.maxBy(_._2.size)
-      combinedTargets += Tuple2(maxSupportPair._1, maxSupportPair._2)
+      val maxSupportPair = supportResults.maxBy { case (_, bitmap) => bitmap.cardinality() }
+      combinedTargets += Tuple2(maxSupportPair._1, maxSupportPair._2.stream().toArray.map(indexToTrace).toSet)
 
-      if (maxSupportPair._1.size > branchingBound && maxSupportPair._2.size >= threshold) {
-          // Expand the search space with new event combinations from maxSupportPair
-          val expandedSearchSpace = {
-            val remainingTargets = filteredTargets.map(_._1).toSet.diff(maxSupportPair._1)
-            remainingTargets.map(newEvent =>
-              (maxSupportPair._1 + newEvent, maxSupportPair._2, filteredTargets.find(_._1 == newEvent).get._2))
+      if (maxSupportPair._1.size > branchingBound && maxSupportPair._2.cardinality() >= threshold) {
+        // Expand the search space with new event combinations from maxSupportPair
+        val expandedSearchSpace = {
+          val remainingTargets = filteredTargets.map(_._1).toSet.diff(maxSupportPair._1)
+          remainingTargets.flatMap { newEvent =>
+            val newEventBitmap = filteredTargets.find(_._1 == newEvent).get._2
+            Some((maxSupportPair._1 + newEvent, maxSupportPair._2, newEventBitmap))
           }
-          // Update searchSpace to only contain the new expanded pairs
-          searchSpace = expandedSearchSpace.toSeq
+        }
+        // Update searchSpace to only contain the new expanded pairs
+        searchSpace = expandedSearchSpace.toSeq
       } else {
-        searchSpace = Seq.empty // End the loop
+        searchSpace = Seq.empty
       }
     }
 
     combinedTargets
   }
+
 
   private def findXORTargets(targets: Seq[(String, Set[String])],
                              frequentTraces: Set[String],
@@ -296,7 +309,7 @@ object TBDeclare {
       val maxExclusivePair = exclusiveResults.maxBy { case (_, bitmap) => bitmap.cardinality() }
       combinedTargets += Tuple2(maxExclusivePair._1, maxExclusivePair._2.stream().toArray.map(indexToTrace).toSet)
 
-      if (maxExclusivePair._1.size > branchingBound && maxExclusivePair._2.cardinality() >= threshold) {
+      if (maxExclusivePair._1.size > branchingBound || maxExclusivePair._2.cardinality() >= threshold) {
 //        combinedTargets += Tuple2(maxExclusivePair._1, maxExclusivePair._2.stream().toArray.map(indexToTrace).toSet)
         // Expand the search space with new event combinations from maxExclusivePair
         val expandedSearchSpace = {
