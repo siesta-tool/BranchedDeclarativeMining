@@ -251,10 +251,11 @@ object DeclareMining {
     merge_i.persist(StorageLevel.MEMORY_AND_DISK)
     merge_i.write.mode(SaveMode.Overwrite).parquet(i_path)
 
-    val c = if (policy.isEmpty)
-      Left(this.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
-    else
-      Right(TBDeclare.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
+    val c =
+//    if (policy.isEmpty)
+        Left(this.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
+//    else
+//      Right(TBDeclare.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
 
     merge_u.unpersist()
     merge_i.unpersist()

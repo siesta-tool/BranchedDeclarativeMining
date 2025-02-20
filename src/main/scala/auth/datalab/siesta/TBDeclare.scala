@@ -9,9 +9,16 @@ import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
 object TBDeclare {
 
-  //////////////////////////////////////////////////////////////////////
-  //               Policy-based constraints extraction                //
-  //////////////////////////////////////////////////////////////////////
+  def extractAllOrderedConstraints(constraints: Dataset[PairConstraint],
+                                   totalTraces: Long,
+                                   support: Double = 0,
+                                   policy: String = "OR",
+                                   branchingBound: Int = 0,
+                                   filterRare: Option[Boolean] = Some(false)): Array[TargetBranchedConstraint] = {
+
+    getBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare = filterRare)
+      .collect()
+  }
 
   def getBranchedConstraints(constraints: Dataset[PairConstraint],
                              totalTraces: Long,
@@ -422,24 +429,4 @@ object TBDeclare {
     Seq((lastValidTargets, lastValidCoverage))
   }
 
-  //////////////////////////////////////////////////////////////////////
-  //    Extraction of branched Constraints with calculated support    //
-  //////////////////////////////////////////////////////////////////////
-
-  def extractAllOrderedConstraints(constraints: Dataset[PairConstraint],
-                                   totalTraces: Long,
-                                   support: Double = 0,
-                                   policy: String = "OR",
-                                   branchingBound: Int = 0,
-                                   filterRare: Option[Boolean] = Some(false)): Array[TargetBranchedConstraint] = {
-
-    getBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare = filterRare)
-      .collect()
-  }
-
-  def extractAllUnorderedConstraints(merge_u: Dataset[(String, Long)], merge_i: Dataset[(String, String, Long)],
-                                     activity_matrix: RDD[(String, String)], support: Double, total_traces: Long)
-  : Array[TargetBranchedConstraint] = {
-    Array.empty[auth.datalab.siesta.Structs.TargetBranchedConstraint]
-  }
 }
