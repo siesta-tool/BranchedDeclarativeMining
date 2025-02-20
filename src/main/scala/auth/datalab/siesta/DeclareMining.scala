@@ -374,12 +374,10 @@ object DeclareMining {
                                         support))
     else
       Right(TBDeclare.extractAllOrderedConstraints (updated_constraints,
-                                              bUnique_traces_to_event_types,
-                                              activity_matrix,
-                                              total_traces,
-                                              support,
-                                              policy,
-                                              branchingBound))
+                                                    total_traces,
+                                                    support,
+                                                    policy,
+                                                    branchingBound))
 
     updated_constraints.unpersist()
     constraints
