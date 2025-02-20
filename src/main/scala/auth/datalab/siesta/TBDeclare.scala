@@ -1,9 +1,9 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Constraint, PairConstraint, PositionConstraint, TargetBranchedConstraint}
+import auth.datalab.siesta.Structs.{PairConstraint, TargetBranchedConstraint}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.{col, collect_list, collect_set, countDistinct, explode, struct}
-import org.apache.spark.sql.{DataFrame, Dataset, Row, SparkSession, functions}
+import org.apache.spark.sql.functions.{collect_set, explode}
+import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
 
 
@@ -19,7 +19,8 @@ object TBDeclare {
                              branchingBound: Int = 1,
                              branchingType: String = "OR",
                              dropFactor: Double = 2.5,
-                             filterRare: Option[Boolean] = Some(false)): Dataset[TargetBranchedConstraint] = {
+                             filterRare: Option[Boolean] = Some(false),
+                             printNum: Option[Boolean] = Some(false)): Dataset[TargetBranchedConstraint] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -72,172 +73,13 @@ object TBDeclare {
         )
       }
 
-    println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
-    groupedConstraints.filter(_.support >= threshold)
-  }
-
-
-  def getORBranchedConstraints(constraints: Dataset[PairConstraint],
-                               totalTraces: Long,
-                               threshold: Double = 0,
-                               branchingBound: Int = 1,
-                               dropFactor: Double = 2.5): Dataset[TargetBranchedConstraint] = {
-    val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
-
-    val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
-
-    // Group by (rule, activationEvent), calculate target sets
-    val groupedConstraints = pairConstraintCounts
-      .as[(String, String, String, Seq[String])]
-      .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
-      .mapGroups { case ((rule, activationEvent), rows) =>
-
-        // Create a list of target events (eventB) and their corresponding trace sets
-        val targetEventData = rows.toSeq.map { case (_, _, targetEvent, traceSet) =>
-          (targetEvent, traceSet.toSet) // Ensure trace sets are unique
-        }
-
-        // Find the target events within the defined branching bound or threshold
-        val targetResult = if (branchingBound > 1)
-          findORTargetsBounded(targetEventData, branchingBound)
-        else
-          findORTargetsUnbounded(targetEventData, threshold, dropFactor)
-
-        // Extract target events and their associated traces
-        val targetEvents = targetResult.flatMap(_._1) // Extract target event names
-        val targetTraces = targetResult.flatMap(_._2) // Extract associated trace sets
-
-        // Calculate the total number of unique traces for the targets
-        val totalUniqueTraces = targetTraces.distinct.size.toDouble
-
-        // Create a TargetBranchedConstraint for the rule and its activation event
-        TargetBranchedConstraint(
-          rule = rule,
-          activation = activationEvent,
-          targets = targetEvents.toArray,
-          support = totalUniqueTraces / totalTraces
-        )
-      }
-
-    println("# = " + groupedConstraints.filter(_.support >= threshold).count())
-    groupedConstraints.filter(_.support >= threshold)
-  }
-
-  def getANDBranchedConstraints(constraints: Dataset[PairConstraint],
-                                totalTraces: Long,
-                                threshold: Double = 0,
-                                branchingBound: Int = 1,
-                                filterRare: Option[Boolean] = Some(false)): Dataset[TargetBranchedConstraint] = {
-    val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
-
-    val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
-
-    // Group by (rule, activationEvent), calculate target sets
-    val groupedConstraints = pairConstraintCounts
-      .as[(String, String, String, Seq[String])]
-      .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
-      .mapGroups { case ((rule, activationEvent), rows) =>
-
-        // Create a list of target events (eventB) and their corresponding trace sets
-        val targetEventData = rows.toSeq.map { case (_, _, targetEvent, traceSet) =>
-          (targetEvent, traceSet.toSet)
-        }
-
-        // Compute frequent traces for target events
-        val frequentTraces = if (filterRare.get)
-          targetEventData.flatMap(_._2).groupBy(identity)
-          .mapValues(_.size)
-          .filter(_._2 == targetEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
-          .keys.toSet
-        else
-          Set.empty[String]
-
-        // Find the target events within the defined branching bound or threshold
-        val targetResult = if (branchingBound > 1)
-          findANDTargetsBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
-        else
-          findANDTargetsUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
-
-        // Extract target events and their associated traces
-        val targetEvents = targetResult.flatMap(_._1) // Extract target event names
-        val targetTraces = targetResult.flatMap(_._2) // Extract associated trace sets
-
-        // Calculate the total number of unique traces for the targets
-        val totalUniqueTraces = targetTraces.distinct.size.toDouble
-
-        // Create a TargetBranchedConstraint for the rule and its activation event
-        TargetBranchedConstraint(
-          rule = rule,
-          activation = activationEvent,
-          targets = targetEvents.toArray,
-          support = totalUniqueTraces / totalTraces
-        )
-      }
-
-    println("# = " + groupedConstraints.filter(_.support >= threshold).count())
-    groupedConstraints.filter(_.support >= threshold)
-  }
-
-  def getXORBranchedConstraints(constraints: Dataset[PairConstraint],
-                                totalTraces: Long,
-                                threshold: Double = 0,
-                                branchingBound: Int = 1,
-                                filterRare: Option[Boolean] = Some(false)): Dataset[TargetBranchedConstraint] = {
-    val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
-
-    val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
-
-    // Group by (rule, activationEvent), calculate target sets
-    val groupedConstraints = pairConstraintCounts
-      .as[(String, String, String, Seq[String])]
-      .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
-      .mapGroups { case ((rule, activationEvent), rows) =>
-
-        // Create a list of target events (eventB) and their corresponding trace sets
-        val targetEventData = rows.toSeq.map { case (_, _, targetEvent, traceSet) =>
-          (targetEvent, traceSet.toSet)
-        }
-
-        // Compute frequent traces for target events
-        val frequentTraces = if (filterRare.get)
-          targetEventData.flatMap(_._2).groupBy(identity)
-            .mapValues(_.size)
-            .filter(_._2 == targetEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
-            .keys.toSet
-        else
-          Set.empty[String]
-
-        // Find the target events within the defined branching bound or threshold
-        val targetResult = if (branchingBound > 1)
-          findXORTargetsBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
-        else
-          findXORTargetsUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
-
-        // Extract target events and their associated traces
-        val targetEvents = targetResult.flatMap(_._1) // Extract target event names
-        val targetTraces = targetResult.flatMap(_._2) // Extract associated trace sets
-
-        // Calculate the total number of unique traces for the targets
-        val totalUniqueTraces = targetTraces.distinct.size.toDouble
-
-        // Create a TargetBranchedConstraint for the rule and its activation event
-        TargetBranchedConstraint(
-          rule = rule,
-          activation = activationEvent,
-          targets = targetEvents.toArray,
-          support = totalUniqueTraces / totalTraces
-        )
-      }
-
-    println("XOR # = " + groupedConstraints.filter(_.support >= threshold).count())
+    if (printNum.get) 
+      println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
     groupedConstraints.filter(_.support >= threshold)
   }
 
   //////////////////////////////////////////////////////////////////////
-  //                Optimal target extraction and helpers             //
+  //                Greedy target extraction and helpers             //
   //////////////////////////////////////////////////////////////////////
 
   private def explodePairConstraints(constraints: Dataset[PairConstraint]): DataFrame = {
@@ -258,7 +100,7 @@ object TBDeclare {
 
 
   private def findORTargetsBounded(targets: Seq[(String, Set[String])],
-                                   branchingBound: Int = 1): Seq[(Set[String], Set[String])] = {
+                                   branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
     var currentTargetsWithTraces = targets.toMap
@@ -342,7 +184,7 @@ object TBDeclare {
   private def findANDTargetsBounded(targets: Seq[(String, Set[String])],
                                     frequentTraces: Set[String],
                                     threshold: Double = 0,
-                                    branchingBound: Int = 1): Seq[(Set[String], Set[String])] = {
+                                    branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
     val filteredTargets = if (frequentTraces.nonEmpty) {
@@ -464,7 +306,7 @@ object TBDeclare {
   private def findXORTargetsBounded(targets: Seq[(String, Set[String])],
                                     frequentTraces: Set[String],
                                     threshold: Double = 0,
-                                    branchingBound: Int = 1): Seq[(Set[String], Set[String])] = {
+                                    branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
     val filteredTargets = if (frequentTraces.nonEmpty) {
@@ -594,26 +436,6 @@ object TBDeclare {
     getBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare = filterRare)
       .collect()
   }
-
-//  def extractAllOrderedConstraints (constraints: Dataset[PairConstraint],
-//                                    totalTraces: Long,
-//                                    support: Double,
-//                                    policy: String,
-//                                    branchingBound: Int = 0): Array[TargetBranchedConstraint] = {
-//
-//    val spark = SparkSession.builder().getOrCreate()
-//    import spark.implicits._
-//
-//    if (policy == "OR") {
-//      getORBranchedConstraints(constraints, totalTraces, support, branchingBound).collect()
-//    } else if (policy == "AND") {
-//      getANDBranchedConstraints(constraints, totalTraces, support, branchingBound).collect()
-//    } else if (policy == "XOR") {
-//      getXORBranchedConstraints(constraints, totalTraces, support, branchingBound).collect()
-//    } else {
-//      spark.emptyDataset[TargetBranchedConstraint].collect()
-//    }
-//  }
 
   def extractAllUnorderedConstraints(merge_u: Dataset[(String, Long)], merge_i: Dataset[(String, String, Long)],
                                      activity_matrix: RDD[(String, String)], support: Double, total_traces: Long)
