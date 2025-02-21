@@ -1,26 +1,37 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{PairConstraint, TargetBranchedConstraint}
-import org.apache.spark.rdd.RDD
+import auth.datalab.siesta.Structs.{PairConstraint, SourceBranchedConstraint, TargetBranchedConstraint}
 import org.apache.spark.sql.functions.{collect_set, explode}
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
 
 
-object TBDeclare {
+object BranchedDeclare {
 
   def extractAllOrderedConstraints(constraints: Dataset[PairConstraint],
                                    totalTraces: Long,
                                    support: Double = 0,
                                    policy: String = "OR",
+                                   branchingType: String = "TARGET",
                                    branchingBound: Int = 0,
-                                   filterRare: Option[Boolean] = Some(false)): Array[TargetBranchedConstraint] = {
+                                   filterRare: Option[Boolean] = Some(false))
+                                  : Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]] = {
 
-    getBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare = filterRare)
-      .collect()
+    if (branchingType == "TARGET")
+      Left(
+        getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
+        filterRare).collect()
+      )
+    else if (branchingType == "SOURCE")
+      Right(
+        getSourceBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
+        filterRare).collect()
+      )
+    else
+      throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
   }
 
-  def getBranchedConstraints(constraints: Dataset[PairConstraint],
+    private def getTargetBranchedConstraints(constraints: Dataset[PairConstraint],
                              totalTraces: Long,
                              threshold: Double = 0,
                              branchingBound: Int = 1,
@@ -55,12 +66,12 @@ object TBDeclare {
 
         // Choose the appropriate find method based on branchingType
         val targetResult = (branchingType, branchingBound > 1) match {
-          case ("OR", true)  => findORTargetsBounded(targetEventData, branchingBound)
-          case ("OR", false) => findORTargetsUnbounded(targetEventData, threshold, dropFactor)
-          case ("AND", true) => findANDTargetsBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
-          case ("AND", false) => findANDTargetsUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
-          case ("XOR", true) => findXORTargetsBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
-          case ("XOR", false) => findXORTargetsUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
+          case ("OR", true)  => findORBranchesBounded(targetEventData, branchingBound)
+          case ("OR", false) => findORBranchesUnbounded(targetEventData, threshold, dropFactor)
+          case ("AND", true) => findANDBranchesBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
+          case ("AND", false) => findANDBranchesUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
+          case ("XOR", true) => findXORBranchesBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
+          case ("XOR", false) => findXORBranchesUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
           case _ => throw new IllegalArgumentException(s"Unsupported branching type: $branchingType")
         }
 
@@ -71,16 +82,81 @@ object TBDeclare {
         // Calculate the total number of unique traces for the targets
         val totalUniqueTraces = targetTraces.distinct.size.toDouble
 
-        // Create a TargetBranchedConstraint for the rule and its activation event
+        // Create a TargetBranchedConstraint for the rule and its source event
         TargetBranchedConstraint(
           rule = rule,
-          activation = activationEvent,
+          source = activationEvent,
           targets = targetEvents.toArray,
           support = totalUniqueTraces / totalTraces
         )
       }
 
-    if (printNum.get) 
+    if (printNum.get)
+      println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
+    groupedConstraints.filter(_.support >= threshold)
+  }
+
+  private def getSourceBranchedConstraints(constraints: Dataset[PairConstraint],
+                                           totalTraces: Long,
+                                           threshold: Double = 0,
+                                           branchingBound: Int = 1,
+                                           branchingType: String = "OR",
+                                           dropFactor: Double = 2.5,
+                                           filterRare: Option[Boolean] = Some(false),
+                                           printNum: Option[Boolean] = Some(false)): Dataset[SourceBranchedConstraint] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
+
+    // Group by (rule, targetEvent), calculate source sets
+    val groupedConstraints = pairConstraintCounts
+      .as[(String, String, String, Seq[String])]
+      .groupByKey { case (rule, _, targetEvent, _) => (rule, targetEvent) }
+      .mapGroups { case ((rule, targetEvent), rows) =>
+
+        // Create a list of source events and their corresponding trace sets
+        val sourceEventData = rows.toSeq.map { case (_, sourceEvent, _, traceSet) =>
+          (sourceEvent, traceSet.toSet)
+        }
+
+        // Compute frequent traces for "AND" and "XOR" branching if needed
+        val frequentTraces = if (filterRare.getOrElse(false) && branchingType != "OR")
+          sourceEventData.flatMap(_._2).groupBy(identity)
+            .mapValues(_.size)
+            .filter(_._2 == sourceEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
+            .keys.toSet
+        else
+          Set.empty[String]
+
+        // Choose the appropriate find method based on branchingType
+        val sourceResult = (branchingType, branchingBound > 1) match {
+          case ("OR", true)  => findORBranchesBounded(sourceEventData, branchingBound)
+          case ("OR", false) => findORBranchesUnbounded(sourceEventData, threshold, dropFactor)
+          case ("AND", true) => findANDBranchesBounded(sourceEventData, frequentTraces, threshold * totalTraces, branchingBound)
+          case ("AND", false) => findANDBranchesUnbounded(sourceEventData, frequentTraces, threshold * totalTraces)
+          case ("XOR", true) => findXORBranchesBounded(sourceEventData, frequentTraces, threshold * totalTraces, branchingBound)
+          case ("XOR", false) => findXORBranchesUnbounded(sourceEventData, frequentTraces, threshold * totalTraces)
+          case _ => throw new IllegalArgumentException(s"Unsupported branching type: $branchingType")
+        }
+
+        // Extract source events and their associated traces
+        val sourceEvents = sourceResult.flatMap(_._1) // Extract source event names
+        val sourceTraces = sourceResult.flatMap(_._2) // Extract associated trace sets
+
+        // Calculate the total number of unique traces for the sources
+        val totalUniqueTraces = sourceTraces.distinct.size.toDouble
+
+        // Create a SourceBranchedConstraint for the rule and its target event
+        SourceBranchedConstraint(
+          rule = rule,
+          sources = sourceEvents.toArray,
+          target = targetEvent,
+          support = totalUniqueTraces / totalTraces
+        )
+      }
+
+    if (printNum.get)
       println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
     groupedConstraints.filter(_.support >= threshold)
   }
@@ -106,7 +182,7 @@ object TBDeclare {
   }
 
 
-  private def findORTargetsBounded(targets: Seq[(String, Set[String])],
+  private def findORBranchesBounded(targets: Seq[(String, Set[String])],
                                    branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
@@ -132,7 +208,7 @@ object TBDeclare {
   }
 
 
-  private def findORTargetsUnbounded(targets: Seq[(String, Set[String])],
+  private def findORBranchesUnbounded(targets: Seq[(String, Set[String])],
                                      threshold: Double = 0.0,
                                      dropFactor: Double = 2.5): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
@@ -188,7 +264,7 @@ object TBDeclare {
   }
 
 
-  private def findANDTargetsBounded(targets: Seq[(String, Set[String])],
+  private def findANDBranchesBounded(targets: Seq[(String, Set[String])],
                                     frequentTraces: Set[String],
                                     threshold: Double = 0,
                                     branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
@@ -245,7 +321,7 @@ object TBDeclare {
   }
 
 
-  private def findANDTargetsUnbounded(targets: Seq[(String, Set[String])],
+  private def findANDBranchesUnbounded(targets: Seq[(String, Set[String])],
                                       frequentTraces: Set[String],
                                       threshold: Double = 0,
                                       dropThreshold: Double = 0.5): Seq[(Set[String], Set[String])] = {
@@ -310,7 +386,7 @@ object TBDeclare {
     Seq((lastValidTargets, lastValidCoverage))
   }
 
-  private def findXORTargetsBounded(targets: Seq[(String, Set[String])],
+  private def findXORBranchesBounded(targets: Seq[(String, Set[String])],
                                     frequentTraces: Set[String],
                                     threshold: Double = 0,
                                     branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
@@ -366,7 +442,7 @@ object TBDeclare {
     Seq((lastValidTargets, lastValidCoverage))
   }
 
-  private def findXORTargetsUnbounded(targets: Seq[(String, Set[String])],
+  private def findXORBranchesUnbounded(targets: Seq[(String, Set[String])],
                                       frequentTraces: Set[String],
                                       threshold: Double = 0,
                                       dropThreshold: Double = 0.5): Seq[(Set[String], Set[String])] = {

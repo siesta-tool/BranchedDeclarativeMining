@@ -255,7 +255,7 @@ object DeclareMining {
 //    if (policy.isEmpty)
         Left(this.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
 //    else
-//      Right(TBDeclare.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
+//      Right(BranchedDeclare.extractAllUnorderedConstraints(merge_u, merge_i, activity_matrix, support, total_traces))
 
     merge_u.unpersist()
     merge_i.unpersist()
@@ -271,8 +271,10 @@ object DeclareMining {
                      total_traces: Long,
                      support: Double,
                      policy: String,
+                     branchingType: String = "TARGET",
                      branchingBound: Int = 0
-                     ): Either[Array[Constraint], Array[TargetBranchedConstraint]] = {
+                     ): Either[ Array[Constraint],
+                                Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]]] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     // get previous data if exist
@@ -374,10 +376,11 @@ object DeclareMining {
                                         activity_matrix,
                                         support))
     else
-      Right(TBDeclare.extractAllOrderedConstraints (updated_constraints,
+      Right(BranchedDeclare.extractAllOrderedConstraints (updated_constraints,
                                                     total_traces,
                                                     support,
                                                     policy,
+                                                    branchingType,
                                                     branchingBound))
 
     updated_constraints.unpersist()

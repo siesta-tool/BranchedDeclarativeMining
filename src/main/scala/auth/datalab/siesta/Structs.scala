@@ -25,5 +25,20 @@ object Structs {
   case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)
 
   case class Constraint(rule:String, activation:String, target:String, support:Double) extends Serializable
-  case class TargetBranchedConstraint(rule:String, activation:String, targets:Array[String], support:Double) extends Serializable
+
+  // Target-branched constraint with a single source and multiple targets
+  case class TargetBranchedConstraint(
+                                       rule: String,
+                                       source: String,
+                                       targets: Array[String],
+                                       support: Double
+                                     ) extends Serializable
+
+  // Source-branched constraint with multiple sources and a single target
+  case class SourceBranchedConstraint(
+                                       rule: String,
+                                       sources: Array[String],
+                                       target: String,
+                                       support: Double
+                                     ) extends Serializable
 }

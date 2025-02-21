@@ -17,7 +17,8 @@ object declare_mining {
     s3Connector.initialize(args(0))
     val support = args(1).toDouble
     val branchingPolicy = if (args.length <= 2) "" else args(2)
-    val branchingBound = if (args.length <= 3) 0 else Integer.valueOf(args(3)).intValue()
+    val branchingType = if (args.length <= 3) "TARGET" else args(3).toUpperCase()
+    val branchingBound = if (args.length <= 4) 0 else Integer.valueOf(args(4)).intValue()
 
     val metaData = s3Connector.get_metadata()
     val spark = SparkSession.builder().getOrCreate()
@@ -99,7 +100,7 @@ object declare_mining {
 
       //extract order relations
       val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
-        bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy, branchingBound)
+        bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy, branchingType, branchingBound)
 
       //handle negative pairs = pairs that does not appear not even once in the data
 //      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
@@ -122,11 +123,11 @@ object declare_mining {
 
 //      position_constraints.foreach(x => {
 //        val formattedDouble = f"${x.support}%.3f"
-//        l += s"${x.rule}|${x.activation}|$formattedDouble\n"
+//        l += s"${x.rule}|${x.source}|$formattedDouble\n"
 //      })
 //      existence_constraints.foreach(x => {
 //        val formattedDouble = f"${x.support}%.3f"
-//        l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
+//        l += s"${x.rule}|${x.source}|${x.target}|$formattedDouble\n"
 //      })
 //      unordered_constraints.foreach(x => {
 //        val formattedDouble = f"${x.occurrences}%.3f"
@@ -134,10 +135,16 @@ object declare_mining {
 //      })
 
       ordered_constraints match {
-        case Right(x) => x.foreach(x => {
-          val formattedDouble = f"${x.support}%.3f"
-          l += s"${x.rule}|${x.activation}|${x.targets.mkString("Array(", ", ", ")")}|$formattedDouble\n"
-        })
+        case Right(x) => x match {
+          case Left(x) => x.foreach(x => {
+              val formattedDouble = f"${x.support}%.3f"
+              l += s"${x.rule}|${x.source}|${x.targets.mkString("(", ", ", ")")}|$formattedDouble\n"
+            })
+          case Right(x) => x.foreach(x => {
+            val formattedDouble = f"${x.support}%.3f"
+            l += s"${x.rule}|${x.sources.mkString("(", ", ", ")")}|${x.target}|$formattedDouble\n"
+          })
+        }
         case Left(x) => x.foreach(x => {
           val formattedDouble = f"${x.support}%.3f"
           l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
