@@ -13,19 +13,20 @@ object BranchedDeclare {
                                    support: Double = 0,
                                    policy: String = "OR",
                                    branchingType: String = "TARGET",
-                                   branchingBound: Int = 0,
+                                   branchingBound: Int = 2,
+                                   dropFactor: Double = 2.5,
                                    filterRare: Option[Boolean] = Some(false))
                                   : Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]] = {
 
     if (branchingType == "TARGET")
       Left(
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
-        filterRare).collect()
+        filterRare, dropFactor = dropFactor).collect()
       )
     else if (branchingType == "SOURCE")
       Right(
         getSourceBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
-        filterRare).collect()
+        filterRare, dropFactor = dropFactor).collect()
       )
     else
       throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
@@ -34,7 +35,7 @@ object BranchedDeclare {
     private def getTargetBranchedConstraints(constraints: Dataset[PairConstraint],
                              totalTraces: Long,
                              threshold: Double = 0,
-                             branchingBound: Int = 1,
+                             branchingBound: Int = 2,
                              branchingType: String = "OR",
                              dropFactor: Double = 2.5,
                              filterRare: Option[Boolean] = Some(false),
@@ -99,7 +100,7 @@ object BranchedDeclare {
   private def getSourceBranchedConstraints(constraints: Dataset[PairConstraint],
                                            totalTraces: Long,
                                            threshold: Double = 0,
-                                           branchingBound: Int = 1,
+                                           branchingBound: Int = 2,
                                            branchingType: String = "OR",
                                            dropFactor: Double = 2.5,
                                            filterRare: Option[Boolean] = Some(false),

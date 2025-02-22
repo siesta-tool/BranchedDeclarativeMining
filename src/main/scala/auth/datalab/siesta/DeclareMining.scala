@@ -271,8 +271,10 @@ object DeclareMining {
                      total_traces: Long,
                      support: Double,
                      policy: String,
-                     branchingType: String = "TARGET",
-                     branchingBound: Int = 0
+                     branchingType: String,
+                     branchingBound: Int,
+                     dropFactor: Double,
+                     filterRare: Boolean
                      ): Either[ Array[Constraint],
                                 Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]]] = {
     val spark = SparkSession.builder().getOrCreate()
@@ -370,7 +372,7 @@ object DeclareMining {
     updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
 
     //compute constraints using support and collect them
-    val constraints = if (policy.isEmpty)
+    val constraints = if (policy.isEmpty || branchingBound <= 1)
       Left(this.extractAllOrderedConstraints (updated_constraints,
                                         bUnique_traces_to_event_types,
                                         activity_matrix,
@@ -381,7 +383,9 @@ object DeclareMining {
                                                     support,
                                                     policy,
                                                     branchingType,
-                                                    branchingBound))
+                                                    branchingBound,
+                                                    dropFactor = dropFactor,
+                                                    filterRare = Some(filterRare)))
 
     updated_constraints.unpersist()
     constraints

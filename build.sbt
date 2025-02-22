@@ -21,6 +21,7 @@ libraryDependencies += "org.apache.hadoop" % "hadoop-common" % hadoopVersion
 libraryDependencies += "org.apache.hadoop" % "hadoop-client" % hadoopVersion
 libraryDependencies += "org.apache.hadoop" % "hadoop-aws" % hadoopVersion //3.0.3
 libraryDependencies += "com.amazonaws" % "aws-java-sdk-bundle" % "1.12.262"
+libraryDependencies += "com.github.scopt" %% "scopt" % "4.1.0"
 
 lazy val root = (project in file("."))
   .settings(

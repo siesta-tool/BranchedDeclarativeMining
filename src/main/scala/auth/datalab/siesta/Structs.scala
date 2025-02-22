@@ -8,6 +8,17 @@ object Structs {
                       var last_declare_mined:String) extends Serializable {
   }
 
+
+  case class Config(
+                     logname: String = "",
+                     support: Double = 0,
+                     branchingPolicy: String = null,
+                     branchingType: String = "TARGET",
+                     branchingBound: Int = 0,
+                     dropFactor: Double = 2.5,
+                     filterRare: Boolean = false
+                   )
+
   case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)
 
   case class Event(event_type:String, ts:String, pos:Int, trace_id:String)
