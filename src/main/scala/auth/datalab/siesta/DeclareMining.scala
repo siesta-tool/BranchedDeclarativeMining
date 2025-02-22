@@ -274,7 +274,8 @@ object DeclareMining {
                      branchingType: String,
                      branchingBound: Int,
                      dropFactor: Double,
-                     filterRare: Boolean
+                     filterRare: Boolean,
+                     filterBounded: Boolean
                      ): Either[ Array[Constraint],
                                 Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]]] = {
     val spark = SparkSession.builder().getOrCreate()
@@ -385,7 +386,8 @@ object DeclareMining {
                                                     branchingType,
                                                     branchingBound,
                                                     dropFactor = dropFactor,
-                                                    filterRare = Some(filterRare)))
+                                                    filterRare = Some(filterRare),
+                                                    filterBounded = filterBounded))
 
     updated_constraints.unpersist()
     constraints

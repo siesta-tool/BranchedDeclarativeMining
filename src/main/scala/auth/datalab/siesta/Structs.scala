@@ -16,7 +16,8 @@ object Structs {
                      branchingType: String = "TARGET",
                      branchingBound: Int = 0,
                      dropFactor: Double = 2.5,
-                     filterRare: Boolean = false
+                     filterRare: Boolean = false,
+                     filterBounded: Boolean = false
                    )
 
   case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)

@@ -50,7 +50,11 @@ object declare_mining {
 
         opt[Boolean]('r', "filterRare")
           .action((x, c) => c.copy(filterRare = x))
-          .text("Filter out rare events, default is false")
+          .text("Filter out rare events, default is false"),
+
+        opt[Boolean]('f', "filterBounded")
+          .action((x, c) => c.copy(filterRare = x))
+          .text("Filter out under-bound templates, default is false")
       )
     }
 
@@ -65,6 +69,7 @@ object declare_mining {
         println(s"Branching Bound: ${config.branchingBound}")
         println(s"Reduction Drop factor: ${config.dropFactor}")
         println(s"Filter out Rare events: ${config.filterRare}")
+        println(s"Filter out under-bound templates: ${config.filterBounded}")
 
 
         val support = config.support
@@ -73,6 +78,7 @@ object declare_mining {
         val branchingBound = config.branchingBound
         val filterRare = config.filterRare
         val dropFactor = config.dropFactor
+        val filterBounded = config.filterBounded
         val metaData = s3Connector.get_metadata()
 
 
@@ -156,7 +162,7 @@ object declare_mining {
           //extract order relations
           val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
             bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
-            branchingBound, filterRare = filterRare, dropFactor = dropFactor)
+            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterBounded)
 
           //handle negative pairs = pairs that does not appear not even once in the data
           //      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,

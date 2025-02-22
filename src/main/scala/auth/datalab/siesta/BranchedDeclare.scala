@@ -15,18 +15,19 @@ object BranchedDeclare {
                                    branchingType: String = "TARGET",
                                    branchingBound: Int = 2,
                                    dropFactor: Double = 2.5,
+                                   filterBounded: Boolean = false,
                                    filterRare: Option[Boolean] = Some(false))
                                   : Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]] = {
 
     if (branchingType == "TARGET")
       Left(
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
-        filterRare, dropFactor = dropFactor).collect()
+        filterRare, dropFactor = dropFactor, filterBounded = filterBounded).collect()
       )
     else if (branchingType == "SOURCE")
       Right(
         getSourceBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
-        filterRare, dropFactor = dropFactor).collect()
+        filterRare, dropFactor = dropFactor, filterBounded = filterBounded).collect()
       )
     else
       throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
@@ -38,6 +39,7 @@ object BranchedDeclare {
                              branchingBound: Int = 2,
                              branchingType: String = "OR",
                              dropFactor: Double = 2.5,
+                             filterBounded: Boolean = false,
                              filterRare: Option[Boolean] = Some(false),
                              printNum: Option[Boolean] = Some(false)): Dataset[TargetBranchedConstraint] = {
     val spark = SparkSession.builder().getOrCreate()
@@ -94,7 +96,11 @@ object BranchedDeclare {
 
     if (printNum.get)
       println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
-    groupedConstraints.filter(_.support >= threshold)
+    val result = groupedConstraints.filter(_.support >= threshold)
+      if (filterBounded)
+        result.filter(_.targets.length == branchingBound)
+      else
+        result
   }
 
   private def getSourceBranchedConstraints(constraints: Dataset[PairConstraint],
@@ -103,6 +109,7 @@ object BranchedDeclare {
                                            branchingBound: Int = 2,
                                            branchingType: String = "OR",
                                            dropFactor: Double = 2.5,
+                                           filterBounded: Boolean = false,
                                            filterRare: Option[Boolean] = Some(false),
                                            printNum: Option[Boolean] = Some(false)): Dataset[SourceBranchedConstraint] = {
     val spark = SparkSession.builder().getOrCreate()
@@ -159,7 +166,11 @@ object BranchedDeclare {
 
     if (printNum.get)
       println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
-    groupedConstraints.filter(_.support >= threshold)
+    val result = groupedConstraints.filter(_.support >= threshold)
+    if (filterBounded)
+      result.filter(_.sources.length == branchingBound)
+    else
+      result
   }
 
   //////////////////////////////////////////////////////////////////////
@@ -313,7 +324,6 @@ object BranchedDeclare {
           (newSet, newCoverage)
         }
       }
-
       candidateSets = candidateSets.filter(_._2.nonEmpty)
       currentSetSize += 1
     }
