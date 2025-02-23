@@ -373,7 +373,7 @@ object DeclareMining {
     updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
 
     //compute constraints using support and collect them
-    val constraints = if (policy.isEmpty || branchingBound <= 1)
+    val constraints = if (policy.isEmpty && branchingBound <= 1)
       Left(this.extractAllOrderedConstraints (updated_constraints,
                                         bUnique_traces_to_event_types,
                                         activity_matrix,

@@ -53,7 +53,7 @@ object declare_mining {
           .text("Filter out rare events, default is false"),
 
         opt[Boolean]('f', "filterBounded")
-          .action((x, c) => c.copy(filterRare = x))
+          .action((x, c) => c.copy(filterBounded = x))
           .text("Filter out under-bound templates, default is false")
       )
     }
@@ -160,6 +160,7 @@ object declare_mining {
           //        bChangedTraces, activity_matrix, support, metaData.traces, branchingPolicy)
 
           //extract order relations
+
           val ordered_constraints = DeclareMining.extractOrdered(metaData.log_name, complete_traces_that_changed, bChangedTraces,
             bEvent_types_occurrences, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
             branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterBounded)
@@ -213,7 +214,8 @@ object declare_mining {
             })
           }
 
-          val file = "output_first.txt"
+          val file = "constraints_" + config.logname + "_s" + config.support + "_b" + config.branchingBound + "_" +
+                      config.branchingPolicy + ".txt"
           val writer = new BufferedWriter(new FileWriter(file))
           l.toList.foreach(writer.write)
           writer.close()

@@ -18,7 +18,6 @@ object BranchedDeclare {
                                    filterBounded: Boolean = false,
                                    filterRare: Option[Boolean] = Some(false))
                                   : Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]] = {
-
     if (branchingType == "TARGET")
       Left(
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
@@ -52,6 +51,7 @@ object BranchedDeclare {
       .as[(String, String, String, Seq[String])]
       .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
       .mapGroups { case ((rule, activationEvent), rows) =>
+
 
         // Create a list of target events and their corresponding trace sets
         val targetEventData = rows.toSeq.map { case (_, _, targetEvent, traceSet) =>
@@ -204,7 +204,8 @@ object BranchedDeclare {
     while (currentTargetsWithTraces.size > branchingBound && currentTargetsWithTraces.nonEmpty) {
       // Evaluate the contribution of each target
       val targetContributions = currentTargetsWithTraces.map { case (target, traces) =>
-        val contribution = (currentTraceCoverage -- traces).size
+        val contribution = currentTraceCoverage.size - currentTargetsWithTraces.filter(_._1 != target).values.flatten
+          .toSet.size
         (target, contribution)
       }
 
@@ -239,7 +240,8 @@ object BranchedDeclare {
     while (currentTargetsWithTraces.nonEmpty && currentTargetsWithTraces.size > 1) {
       // Evaluate the contribution of each target
       val targetContributions = currentTargetsWithTraces.map { case (target, traces) =>
-        val contribution = (currentTraceCoverage -- traces).size
+        val contribution = currentTraceCoverage.size - currentTargetsWithTraces.filter(_._1 != target).values.flatten
+          .toSet.size
         (target, contribution)
       }
 
@@ -353,9 +355,11 @@ object BranchedDeclare {
 
     if (candidateSets.isEmpty) return Seq.empty
 
-
     var lastValidTargets = candidateSets.head._1
     var lastValidCoverage = candidateSets.head._2
+
+    if (lastValidCoverage.isEmpty)
+      return Seq((Set(filteredTargets.maxBy(_._2.size)._1), filteredTargets.maxBy(_._2.size)._2))
 
     var sumOfReductions = 0.0
     var sumOfReductions2 = 0.0
@@ -376,7 +380,7 @@ object BranchedDeclare {
       val reductionMean = sumOfReductions / countOfReductions
       reductionStd = Math.sqrt((sumOfReductions2 / countOfReductions) - Math.pow(reductionMean, 2))
 
-      if (Math.abs(currentSupport - reductionMean) > dropThreshold * reductionStd) {
+      if (Math.abs(currentSupport - reductionMean) > dropThreshold * reductionStd || currentSupport == 0) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
@@ -477,6 +481,9 @@ object BranchedDeclare {
     var lastValidTargets = candidateSets.head._1
     var lastValidCoverage = candidateSets.head._2
 
+    if (lastValidCoverage.isEmpty)
+      return Seq((Set(filteredTargets.maxBy(_._2.size)._1), filteredTargets.maxBy(_._2.size)._2))
+
     var sumOfReductions = 0.0
     var sumOfReductions2 = 0.0
     var countOfReductions = 0
@@ -496,7 +503,7 @@ object BranchedDeclare {
       val reductionMean = sumOfReductions / countOfReductions
       reductionStd = Math.sqrt((sumOfReductions2 / countOfReductions) - Math.pow(reductionMean, 2))
 
-      if (Math.abs(currentSupport - reductionMean) > dropThreshold * reductionStd) {
+      if (Math.abs(currentSupport - reductionMean) > dropThreshold * reductionStd || currentSupport == 0) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
