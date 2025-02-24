@@ -275,20 +275,24 @@ object DeclareMining {
                      branchingBound: Int,
                      dropFactor: Double,
                      filterRare: Boolean,
-                     filterBounded: Boolean
+                     filterBounded: Boolean,
                      ): Either[ Array[Constraint],
                                 Either[Array[TargetBranchedConstraint], Array[SourceBranchedConstraint]]] = {
+
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     // get previous data if exist
     val order_path = s"""s3a://siesta/$logname/declare/order.parquet/"""
 
     val previously = try {
-      spark.read.parquet(order_path).as[PairConstraint]
+      spark.read.parquet(order_path).as[PairConstraintRow]
+        .groupByKey(row => (row.rule, row.eventA, row.eventB))
+        .mapGroups { case ((rule, eventA, eventB), rows) =>
+          PairConstraint(rule, eventA, eventB, rows.map(_.trace).toArray)
+        }
     } catch {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraint]
     }
-
 
     val new_ordered_relations = complete_traces_that_changed.rdd
       .groupBy(_.trace_id)
@@ -370,7 +374,13 @@ object DeclareMining {
     updated_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
     //    write updated constraints back to s3
-    updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
+//    updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
+    val flattenedConstraints = updated_constraints.flatMap(pc =>
+      pc.traces.map(trace => PairConstraintRow(pc.rule, pc.eventA, pc.eventB, trace))
+    )
+
+    flattenedConstraints.write.mode(SaveMode.Overwrite).parquet(order_path)
+
 
     //compute constraints using support and collect them
     val constraints = if (policy == null || policy.isEmpty && branchingBound <= 1)

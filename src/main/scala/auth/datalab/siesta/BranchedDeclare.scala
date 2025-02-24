@@ -225,7 +225,6 @@ object BranchedDeclare {
                                      threshold: Double = 0.0,
                                      dropFactor: Double = 2.5): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
-
     var currentTargetsWithTraces = targets.toMap
     var currentTraceCoverage = currentTargetsWithTraces.values.flatten.toSet
 

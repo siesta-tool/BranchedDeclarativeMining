@@ -55,7 +55,11 @@ object declare_mining {
 
         opt[Boolean]('f', "filterBounded")
           .action((x, c) => c.copy(filterBounded = x))
-          .text("Filter out under-bound templates, default is false")
+          .text("Filter out under-bound templates, default is false"),
+
+        opt[Boolean]('n', "onlyNew")
+          .action((x, c) => c.copy(onlyNew = x))
+          .text("Find only new constraints, default is true")
       )
     }
 
@@ -71,6 +75,7 @@ object declare_mining {
         println(s"Reduction Drop factor: ${config.dropFactor}")
         println(s"Filter out Rare events: ${config.filterRare}")
         println(s"Filter out under-bound templates: ${config.filterBounded}")
+        println(s"Find only new constraints: ${config.onlyNew}")
 
 
         val support = config.support
@@ -80,6 +85,7 @@ object declare_mining {
         val filterRare = config.filterRare
         val dropFactor = config.dropFactor
         val filterBounded = config.filterBounded
+        val onlyNew = config.onlyNew
         val metaData = s3Connector.get_metadata()
 
 
@@ -114,8 +120,10 @@ object declare_mining {
                 true
               } else {
                 // the events that//    new_events.show() we need to keep are after the previous timestamp
-                Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
-//                true  //TODO: replace line with the above for production
+                if (onlyNew)
+                  Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
+                else
+                  true
               }
             })
 
@@ -215,7 +223,7 @@ object declare_mining {
             })
           }
 
-          val file = "constraints_" + config.logname + "_s" + config.support + "_b" + config.branchingBound + "_" +
+          val file = "constraints_" + config.logname + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
                       config.branchingPolicy + ".txt"
           val writer = new BufferedWriter(new FileWriter(file))
           l.toList.foreach(writer.write)

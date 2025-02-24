@@ -17,8 +17,9 @@ object Structs {
                      branchingBound: Int = 0,
                      dropFactor: Double = 2.5,
                      filterRare: Boolean = false,
-                     filterBounded: Boolean = false
-                   )
+                     filterBounded: Boolean = false,
+                     onlyNew: Boolean = true
+                  )
 
   case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)
 
@@ -31,6 +32,7 @@ object Structs {
   case class ActivityExactly(event_type:String, instances:Long, traces:Array[String])
 
   case class ExistenceConstraint(rule:String, event_type:String, n: Int, traces:Array[String])
+  case class PairConstraintRow(rule: String, eventA: String, eventB: String, trace: String)
   case class PairConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 
 
