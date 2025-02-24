@@ -8,6 +8,7 @@ import org.apache.spark.storage.StorageLevel
 import java.io.{BufferedWriter, FileWriter}
 import scopt.OParser
 
+import java.sql.Timestamp
 import scala.collection.mutable.ListBuffer
 
 object declare_mining {
@@ -113,8 +114,8 @@ object declare_mining {
                 true
               } else {
                 // the events that//    new_events.show() we need to keep are after the previous timestamp
-                //            Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
-                true  //TODO: replace line with the above for production
+                Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
+//                true  //TODO: replace line with the above for production
               }
             })
 
@@ -220,18 +221,18 @@ object declare_mining {
           l.toList.foreach(writer.write)
           writer.close()
 
-          //      if (!new_events.isEmpty) {
-          //        val last_ts = new_events.rdd
-          //          .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => {
-          //            if (x.after(y)) {
-          //              x
-          //            } else {
-          //              y
-          //            }
-          //          })
-          //        metaData.last_declare_mined = last_ts.toString
-          //        s3Connector.write_metadata(metaData)
-          //      }
+          if (!new_events.isEmpty) {
+            val last_ts = new_events.rdd
+              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => {
+                if (x.after(y)) {
+                  x
+                } else {
+                  y
+                }
+              })
+            metaData.last_declare_mined = last_ts.toString
+            s3Connector.write_metadata(metaData)
+          }
 
           //TODO: change support/ total traces to broadcasted variables
 
