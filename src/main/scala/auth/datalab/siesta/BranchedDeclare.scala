@@ -1,7 +1,7 @@
 package auth.datalab.siesta
 
 import auth.datalab.siesta.Structs.{PairConstraint, SourceBranchedConstraint, TargetBranchedConstraint}
-import org.apache.spark.sql.functions.{collect_set, explode}
+import org.apache.spark.sql.functions.{collect_set, count, explode, pow}
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
 
@@ -32,7 +32,7 @@ object BranchedDeclare {
       throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
   }
 
-    private def getTargetBranchedConstraints(constraints: Dataset[PairConstraint],
+  private def getTargetBranchedConstraints(constraints: Dataset[PairConstraint],
                              totalTraces: Long,
                              threshold: Double = 0,
                              branchingBound: Int = 2,
@@ -41,66 +41,71 @@ object BranchedDeclare {
                              filterBounded: Boolean = false,
                              filterRare: Option[Boolean] = Some(false),
                              printNum: Option[Boolean] = Some(false)): Dataset[TargetBranchedConstraint] = {
-    val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
+      val spark = SparkSession.builder().getOrCreate()
+      import spark.implicits._
 
-    val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
+      val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
 
-    // Group by (rule, activationEvent), calculate target sets
-    val groupedConstraints = pairConstraintCounts
-      .as[(String, String, String, Seq[String])]
-      .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
-      .mapGroups { case ((rule, activationEvent), rows) =>
+      val pairConstraints = pairConstraintCounts.as[(String, String, String, Seq[String])]
+        .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
+        .mapGroups { case ((rule, activationEvent), rows) => (rule, activationEvent, rows.map{ case (_,_,tar,tr) => (tar, tr)}.toSeq) }
+        .collect()
+
+      // Group by (rule, activationEvent), calculate target sets
+      val groupedConstraints = pairConstraintCounts
+        .as[(String, String, String, Seq[String])]
+        .groupByKey { case (rule, activationEvent, _, _) => (rule, activationEvent) }
+        .mapGroups { case ((rule, activationEvent), rows) =>
 
 
-        // Create a list of target events and their corresponding trace sets
-        val targetEventData = rows.toSeq.map { case (_, _, targetEvent, traceSet) =>
-          (targetEvent, traceSet.toSet)
-        }
+          // Create a list of target events and their corresponding trace sets
+          val targetEventData = rows.toSeq.map { case (_, _, targetEvent, traceSet) =>
+            (targetEvent, traceSet.toSet)
+          }
 
-        // Compute frequent traces for "AND" and "XOR" branching if needed
-        val frequentTraces = if (filterRare.getOrElse(false) && branchingType != "OR")
-          targetEventData.flatMap(_._2).groupBy(identity)
-            .mapValues(_.size)
-            .filter(_._2 == targetEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
-            .keys.toSet
-        else
-          Set.empty[String]
+          // Compute frequent traces for "AND" and "XOR" branching if needed
+          val frequentTraces = if (filterRare.getOrElse(false) && branchingType != "OR")
+            targetEventData.flatMap(_._2).groupBy(identity)
+              .mapValues(_.size)
+              .filter(_._2 == targetEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
+              .keys.toSet
+          else
+            Set.empty[String]
 
-        // Choose the appropriate find method based on branchingType
-        val targetResult = (branchingType, branchingBound > 1) match {
-          case ("OR", true)  => findORBranchesBounded(targetEventData, branchingBound)
-          case ("OR", false) => findORBranchesUnbounded(targetEventData, threshold, dropFactor)
-          case ("AND", true) => findANDBranchesBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
-          case ("AND", false) => findANDBranchesUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
-          case ("XOR", true) => findXORBranchesBounded(targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
-          case ("XOR", false) => findXORBranchesUnbounded(targetEventData, frequentTraces, threshold * totalTraces)
-          case _ => throw new IllegalArgumentException(s"Unsupported branching type: $branchingType")
-        }
+          // Choose the appropriate find method based on branchingType
+          val targetResult = (branchingType, branchingBound > 1) match {
+            case ("OR", true) => findORBranchesBounded(targetEventData, branchingBound)
+            case ("OR", false) => findORBranchesUnbounded(targetEventData, threshold, dropFactor)
+            case ("AND", true) => findANDBranchesBounded(pairConstraints, rule, targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
+            case ("AND", false) => findANDBranchesUnbounded(pairConstraints, rule, targetEventData, frequentTraces, threshold * totalTraces)
+            case ("XOR", true) => findXORBranchesBounded(pairConstraints, rule, targetEventData, frequentTraces, threshold * totalTraces, branchingBound)
+            case ("XOR", false) => findXORBranchesUnbounded(pairConstraints, rule, targetEventData, frequentTraces, threshold * totalTraces)
+            case _ => throw new IllegalArgumentException(s"Unsupported branching type: $branchingType")
+          }
 
-        // Extract target events and their associated traces
-        val targetEvents = targetResult.flatMap(_._1) // Extract target event names
-        val targetTraces = targetResult.flatMap(_._2) // Extract associated trace sets
+          // Extract target events and their associated traces
+          val targetEvents = targetResult.flatMap(_._1) // Extract target event names
+          val targetTraces = targetResult.flatMap(_._2) // Extract associated trace sets
 
-        // Calculate the total number of unique traces for the targets
-        val totalUniqueTraces = targetTraces.distinct.size.toDouble
+          // Calculate the total number of unique traces for the targets
+          val totalUniqueTraces = targetTraces.distinct.size.toDouble
 
-        // Create a TargetBranchedConstraint for the rule and its source event
-        TargetBranchedConstraint(
-          rule = rule,
-          source = activationEvent,
-          targets = targetEvents.toArray,
-          support = totalUniqueTraces / totalTraces
-        )
-      }
+          // Create a TargetBranchedConstraint for the rule and its source event
+          TargetBranchedConstraint(
+            rule = rule,
+            source = activationEvent,
+            targets = targetEvents.toArray,
+            support = totalUniqueTraces / totalTraces
+          )
+        }.filter(_.support > 0)
 
     if (printNum.get)
       println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
     val result = groupedConstraints.filter(_.support >= threshold)
-      if (filterBounded)
-        result.filter(_.targets.length == branchingBound)
-      else
-        result
+    if (filterBounded)
+      result.filter(_.targets.length == branchingBound)
+    else
+      result
   }
 
   private def getSourceBranchedConstraints(constraints: Dataset[PairConstraint],
@@ -116,6 +121,10 @@ object BranchedDeclare {
     import spark.implicits._
 
     val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
+    val pairConstraints = pairConstraintCounts.as[(String, String, String, Seq[String])]
+      .groupByKey { case (rule, targetEvent, _, _) => (rule, targetEvent) }
+      .mapGroups { case ((rule, targetEvent), rows) => (rule, targetEvent, rows.map{ case (_,_,tar,tr) => (tar, tr)}.toSeq) }
+      .collect()
 
     // Group by (rule, targetEvent), calculate source sets
     val groupedConstraints = pairConstraintCounts
@@ -138,13 +147,13 @@ object BranchedDeclare {
           Set.empty[String]
 
         // Choose the appropriate find method based on branchingType
-        val sourceResult = (branchingType, branchingBound > 1) match {
+        val sourceResult = (branchingType, branchingBound > 0) match {
           case ("OR", true)  => findORBranchesBounded(sourceEventData, branchingBound)
-          case ("OR", false) => findORBranchesUnbounded(sourceEventData, threshold, dropFactor)
-          case ("AND", true) => findANDBranchesBounded(sourceEventData, frequentTraces, threshold * totalTraces, branchingBound)
-          case ("AND", false) => findANDBranchesUnbounded(sourceEventData, frequentTraces, threshold * totalTraces)
-          case ("XOR", true) => findXORBranchesBounded(sourceEventData, frequentTraces, threshold * totalTraces, branchingBound)
-          case ("XOR", false) => findXORBranchesUnbounded(sourceEventData, frequentTraces, threshold * totalTraces)
+          case ("OR", false) => findORBranchesUnbounded(sourceEventData, threshold * totalTraces, dropFactor)
+          case ("AND", true) => findANDBranchesBounded(pairConstraints, rule, sourceEventData, frequentTraces, threshold * totalTraces, branchingBound)
+          case ("AND", false) => findANDBranchesUnbounded(pairConstraints, rule, sourceEventData, frequentTraces, threshold * totalTraces)
+          case ("XOR", true) => findXORBranchesBounded(pairConstraints, rule, sourceEventData, frequentTraces, threshold * totalTraces, branchingBound)
+          case ("XOR", false) => findXORBranchesUnbounded(pairConstraints, rule, sourceEventData, frequentTraces, threshold * totalTraces)
           case _ => throw new IllegalArgumentException(s"Unsupported branching type: $branchingType")
         }
 
@@ -162,7 +171,7 @@ object BranchedDeclare {
           target = targetEvent,
           support = totalUniqueTraces / totalTraces
         )
-      }
+      }.filter(_.support > 0)
 
     if (printNum.get)
       println(s"$branchingType # = " + groupedConstraints.filter(_.support >= threshold).count())
@@ -195,10 +204,11 @@ object BranchedDeclare {
 
 
   private def findORBranchesBounded(targets: Seq[(String, Set[String])],
-                                   branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
+                                    branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
     var currentTargetsWithTraces = targets.toMap
+
     var currentTraceCoverage = currentTargetsWithTraces.values.flatten.toSet
 
     while (currentTargetsWithTraces.size > branchingBound && currentTargetsWithTraces.nonEmpty) {
@@ -216,7 +226,6 @@ object BranchedDeclare {
       currentTargetsWithTraces -= minTarget
       currentTraceCoverage = currentTargetsWithTraces.values.flatten.toSet
     }
-
     Seq((currentTargetsWithTraces.keySet, currentTraceCoverage))
   }
 
@@ -256,7 +265,7 @@ object BranchedDeclare {
 
 
       // Stop if the threshold condition is met
-      if (threshold > 0 && currentTraceCoverage.size.toDouble <= threshold) {
+      if (threshold > 0 && currentTraceCoverage.size.toDouble <= threshold || currentTraceCoverage.size.toDouble == 0) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
@@ -277,10 +286,12 @@ object BranchedDeclare {
   }
 
 
-  private def findANDBranchesBounded(targets: Seq[(String, Set[String])],
-                                    frequentTraces: Set[String],
-                                    threshold: Double = 0,
-                                    branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
+  private def findANDBranchesBounded( pairConstraints: Array[(String, String, Seq[(String, Seq[String])])],
+                                      rule: String,
+                                      targets: Seq[(String, Set[String])],
+                                      frequentTraces: Set[String],
+                                      threshold: Double = 0,
+                                      branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
     val filteredTargets = if (frequentTraces.nonEmpty) {
@@ -292,39 +303,71 @@ object BranchedDeclare {
 
     if (filteredTargets.isEmpty) return Seq.empty
 
-    var candidateSets = filteredTargets.combinations(2).map { pair =>
-      val combinedSet = pair.map(_._1).toSet
-      val combinedCoverage = pair.map(_._2).reduce(_ intersect _)
-      (combinedSet, combinedCoverage)
-    }.toSeq
+    var candidateSets = if (!rule.contains("chain")) {
+      filteredTargets.combinations(2).map { pair =>
+        val combinedSet = pair.map(_._1).toSet
+        val combinedCoverage = pair.map(_._2).reduce(_ intersect _)
+        (combinedSet, combinedCoverage)
+      }.toSeq
+    } else {
+      filteredTargets.flatMap { case (key, traceSet) =>
+        pairConstraints.flatMap { case (r, keyInPair, rows) =>
+          if (r == rule && key == keyInPair) {
+            rows.map(row => (Set(key, row._1), row._2.toSet intersect traceSet)).filter(_._2.nonEmpty)
+          } else {
+            None
+          }
+        }
+      }
+    }
 
     if (candidateSets.isEmpty) return Seq.empty
 
-    var lastValidTargets = candidateSets.head._1
-    var lastValidCoverage = candidateSets.head._2
+    var lastValidTargets = candidateSets.maxBy(_._2.size)._1
+    var lastValidCoverage = candidateSets.maxBy(_._2.size)._2
 
     var currentSetSize = 2
 
-    while (candidateSets.nonEmpty && currentSetSize < branchingBound) {
+    while (candidateSets.nonEmpty && currentSetSize <= branchingBound) {
       // Sort candidates by trace coverage and keep the top-1
       val topCandidate = candidateSets.maxBy(_._2.size)
-      lastValidTargets = topCandidate._1
-      lastValidCoverage = topCandidate._2
 
       // Check if the threshold is met
-      val currentSupport = lastValidCoverage.size.toDouble
-      if (currentSupport > 0 && threshold > 0 && currentSupport <= threshold) {
+      val currentSupport = topCandidate._2.size.toDouble
+      if (currentSupport == 0 || threshold > 0 && currentSupport <= threshold) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
+      lastValidTargets = topCandidate._1
+      lastValidCoverage = topCandidate._2
+
       // Generate new candidates by increasing set size by 1
-      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
-        targets.filterNot(t => currentSet.contains(t._1)).map { t =>
-          val newSet = currentSet + t._1
-          val newCoverage = currentCoverage intersect t._2
-          (newSet, newCoverage)
-        }
+      candidateSets = candidateSets.filter(_._1 == lastValidTargets)
+      candidateSets = if (!rule.contains("chain")) {
+        candidateSets.flatMap { case (currentSet, currentCoverage) =>
+          targets.filterNot(t => currentSet.contains(t._1)).map { t =>
+            val newSet = currentSet + t._1
+            val newCoverage = currentCoverage intersect t._2
+            if (newCoverage.size > 1)
+              (newSet, newCoverage)
+            else
+              (Set.empty[String], Set.empty[String])
+          }
+        }.filter(_._1.nonEmpty)
+      } else {
+        candidateSets.flatMap { case (unionSet, traceSet) =>
+          // Find other union sets that differ by exactly one element
+          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
+            .map { case (otherUnionSet, otherTraceSet) =>
+              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
+              val extendedUnionSet = unionSet union otherUnionSet
+              // Step 3: Recompute the trace intersection
+              val extendedTraceSet = traceSet intersect otherTraceSet
+              (extendedUnionSet, extendedTraceSet)
+            }
+        }.filter(_._1.nonEmpty)
       }
+
       candidateSets = candidateSets.filter(_._2.nonEmpty)
       currentSetSize += 1
     }
@@ -332,11 +375,12 @@ object BranchedDeclare {
     Seq((lastValidTargets, lastValidCoverage))
   }
 
-
-  private def findANDBranchesUnbounded(targets: Seq[(String, Set[String])],
-                                      frequentTraces: Set[String],
-                                      threshold: Double = 0,
-                                      dropThreshold: Double = 0.5): Seq[(Set[String], Set[String])] = {
+  private def findANDBranchesUnbounded( pairConstraints: Array[(String, String, Seq[(String, Seq[String])])],
+                                        rule: String,
+                                        targets: Seq[(String, Set[String])],
+                                        frequentTraces: Set[String],
+                                        threshold: Double = 0,
+                                        dropThreshold: Double = 0.5): Seq[(Set[String], Set[String])] = {
     if (targets.isEmpty) return Seq.empty
 
     val filteredTargets = if (frequentTraces.nonEmpty) {
@@ -346,11 +390,211 @@ object BranchedDeclare {
     if (filteredTargets.size == 1)
       return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
 
-    var candidateSets = filteredTargets.combinations(2).map { pair =>
-      val combinedSet = pair.map(_._1).toSet
-      val combinedCoverage = pair.map(_._2).reduce(_ intersect _)
-      (combinedSet, combinedCoverage)
-    }.toSeq
+    var candidateSets = if (!rule.contains("chain")) {
+      filteredTargets.combinations(2).map { pair =>
+        val combinedSet = pair.map(_._1).toSet
+        val combinedCoverage = pair.map(_._2).reduce(_ intersect _)
+        (combinedSet, combinedCoverage)
+      }.toSeq
+    } else {
+      filteredTargets.flatMap { case (key, traceSet) =>
+        pairConstraints.flatMap { case (r, keyInPair, rows) =>
+          if (r == rule && key == keyInPair) {
+            rows.map(row => (Set(key, row._1), row._2.toSet intersect traceSet)).filter(_._2.nonEmpty)
+          } else {
+            None
+          }
+        }
+      }
+    }
+
+    if (candidateSets.isEmpty) return Seq.empty
+
+    var lastValidTargets = candidateSets.head._1
+    var lastValidCoverage = candidateSets.head._2
+
+    if (lastValidCoverage.isEmpty)
+      return Seq((Set(filteredTargets.maxBy(_._2.size)._1), filteredTargets.maxBy(_._2.size)._2))
+
+    var sumOfReductions = 0.0
+    var sumOfReductions2 = 0.0
+    var countOfReductions = 0
+    var reductionStd = 0.0
+
+    while (candidateSets.nonEmpty && lastValidCoverage.size > 1) {
+      val topCandidate = candidateSets.maxBy(_._2.size)
+
+      val currentSupport = topCandidate._2.size.toDouble
+      if (currentSupport <= threshold || currentSupport == 0) {
+        return Seq((lastValidTargets, lastValidCoverage))
+      }
+
+      sumOfReductions += currentSupport
+      sumOfReductions2 += Math.pow(currentSupport, 2)
+      countOfReductions += 1
+      val reductionMean = sumOfReductions / countOfReductions
+      reductionStd = Math.sqrt((sumOfReductions2 / countOfReductions) - Math.pow(reductionMean, 2))
+
+      if (Math.abs(currentSupport - reductionMean) > dropThreshold * reductionStd || currentSupport == 0) {
+        return Seq((lastValidTargets, lastValidCoverage))
+      }
+
+      lastValidTargets = topCandidate._1
+      lastValidCoverage = topCandidate._2
+
+      candidateSets = candidateSets.filter(_._1 == lastValidTargets)
+      candidateSets = if (!rule.contains("chain")) {
+        candidateSets.flatMap { case (currentSet, currentCoverage) =>
+          targets.filterNot(t => currentSet.contains(t._1)).map { t =>
+            val newSet = currentSet + t._1
+            val newCoverage = currentCoverage intersect t._2
+            if (newCoverage.size > 1)
+              (newSet, newCoverage)
+            else
+              (Set.empty[String], Set.empty[String])
+          }
+        }.filter(_._1.nonEmpty)
+      } else {
+        candidateSets.flatMap { case (unionSet, traceSet) =>
+          // Find other union sets that differ by exactly one element
+          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
+            .map { case (otherUnionSet, otherTraceSet) =>
+              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
+              val extendedUnionSet = unionSet union otherUnionSet
+              // Step 3: Recompute the trace intersection
+              val extendedTraceSet = traceSet intersect otherTraceSet
+              (extendedUnionSet, extendedTraceSet)
+            }
+        }.filter(_._1.nonEmpty)
+      }
+
+      candidateSets = candidateSets.filter(_._2.nonEmpty)
+
+    }
+    Seq((lastValidTargets, lastValidCoverage))
+  }
+
+  private def findXORBranchesBounded( pairConstraints: Array[(String, String, Seq[(String, Seq[String])])],
+                                      rule: String,
+                                      targets: Seq[(String, Set[String])],
+                                      frequentTraces: Set[String],
+                                      threshold: Double = 0,
+                                      branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
+    if (targets.isEmpty) return Seq.empty
+
+    val filteredTargets = if (frequentTraces.nonEmpty) {
+      targets.filter { case (_, traceSet) => traceSet.exists(frequentTraces.contains) }
+    } else targets
+
+    if (filteredTargets.size == 1)
+      return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
+
+    if (filteredTargets.isEmpty) return Seq.empty
+
+    var candidateSets = if (!rule.contains("chain")) {
+      filteredTargets.combinations(2).map { pair =>
+        val combinedSet = pair.map(_._1).toSet
+        val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
+        (combinedSet, combinedCoverage)
+      }.toSeq
+    } else {
+      filteredTargets.flatMap { case (key, traceSet) =>
+        pairConstraints.flatMap { case (r, keyInPair, rows) =>
+          if (r == rule && key == keyInPair) {
+            rows.map(row => (Set(key, row._1), (row._2.toSet union traceSet) diff (row._2.toSet intersect traceSet))).filter(_._2.nonEmpty)
+          } else {
+            None
+          }
+        }
+      }
+    }
+
+    if (candidateSets.isEmpty) return Seq.empty
+
+    var lastValidTargets = candidateSets.head._1
+    var lastValidCoverage = candidateSets.head._2
+
+    var currentSetSize = 2
+
+    while (candidateSets.nonEmpty && currentSetSize <= branchingBound) {
+      // Sort candidates by trace coverage and keep the top-1
+      val topCandidate = candidateSets.maxBy(_._2.size)
+
+      // Check if the threshold is met
+      val currentSupport = topCandidate._2.size.toDouble
+      if (currentSupport == 0 || threshold > 0 && currentSupport <= threshold) {
+        return Seq((lastValidTargets, lastValidCoverage))
+      }
+
+      lastValidTargets = topCandidate._1
+      lastValidCoverage = topCandidate._2
+
+      // Generate new candidates by increasing set size by 1
+      candidateSets = candidateSets.filter(_._1 == lastValidTargets)
+      candidateSets = if (!rule.contains("chain")) {
+        candidateSets.flatMap { case (currentSet, currentCoverage) =>
+          targets.filterNot(t => currentSet.contains(t._1)).map { t =>
+            val newSet = currentSet + t._1
+            val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
+            if (newCoverage.size > 1)
+              (newSet, newCoverage)
+            else
+              (Set.empty[String], Set.empty[String])
+          }
+        }.filter(_._1.nonEmpty)
+      } else {
+        candidateSets.flatMap { case (unionSet, traceSet) =>
+          // Find other union sets that differ by exactly one element
+          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
+            .map { case (otherUnionSet, otherTraceSet) =>
+              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
+              val extendedUnionSet = unionSet union otherUnionSet
+              // Step 3: Recompute the trace intersection
+              val extendedTraceSet = (traceSet union otherTraceSet) diff (traceSet intersect otherTraceSet)
+              (extendedUnionSet, extendedTraceSet)
+            }
+        }.filter(_._1.nonEmpty)
+      }
+
+      candidateSets = candidateSets.filter(_._2.nonEmpty)
+      currentSetSize += 1
+    }
+
+    Seq((lastValidTargets, lastValidCoverage))
+  }
+
+  private def findXORBranchesUnbounded( pairConstraints: Array[(String, String, Seq[(String, Seq[String])])],
+                                        rule: String,
+                                        targets: Seq[(String, Set[String])],
+                                        frequentTraces: Set[String],
+                                        threshold: Double = 0,
+                                        dropThreshold: Double = 0.5): Seq[(Set[String], Set[String])] = {
+    if (targets.isEmpty) return Seq.empty
+
+    val filteredTargets = if (frequentTraces.nonEmpty) {
+      targets.filter { case (_, traceSet) => traceSet.exists(frequentTraces.contains) }
+    } else targets
+
+    if (filteredTargets.size == 1)
+      return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
+
+    var candidateSets = if (!rule.contains("chain")) {
+      filteredTargets.combinations(2).map { pair =>
+        val combinedSet = pair.map(_._1).toSet
+        val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
+        (combinedSet, combinedCoverage)
+      }.toSeq
+    } else {
+      filteredTargets.flatMap { case (key, traceSet) =>
+        pairConstraints.flatMap { case (r, keyInPair, rows) =>
+          if (r == rule && key == keyInPair) {
+            rows.map(row => (Set(key, row._1), (row._2.toSet union traceSet) diff (row._2.toSet intersect traceSet))).filter(_._2.nonEmpty)
+          } else {
+            None
+          }
+        }
+      }
+    }
 
     if (candidateSets.isEmpty) return Seq.empty
 
@@ -369,7 +613,8 @@ object BranchedDeclare {
       val topCandidate = candidateSets.maxBy(_._2.size)
 
       val currentSupport = topCandidate._2.size.toDouble
-      if (currentSupport <= threshold) {
+//      println(candidateSets.size, topCandidate._1.size, topCandidate._2.size)
+      if (currentSupport <= threshold || currentSupport == 0) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
@@ -385,136 +630,32 @@ object BranchedDeclare {
 
       lastValidTargets = topCandidate._1
       lastValidCoverage = topCandidate._2
-
-      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
-        filteredTargets.filterNot(t => currentSet.contains(t._1)).map { t =>
-          val newSet = currentSet + t._1
-          val newCoverage = currentCoverage intersect t._2
-          (newSet, newCoverage)
-        }
-      }
-
-      candidateSets = candidateSets.filter(_._2.nonEmpty)
-
-    }
-    Seq((lastValidTargets, lastValidCoverage))
-  }
-
-  private def findXORBranchesBounded(targets: Seq[(String, Set[String])],
-                                    frequentTraces: Set[String],
-                                    threshold: Double = 0,
-                                    branchingBound: Int = 2): Seq[(Set[String], Set[String])] = {
-    if (targets.isEmpty) return Seq.empty
-
-    val filteredTargets = if (frequentTraces.nonEmpty) {
-      targets.filter { case (_, traceSet) => traceSet.exists(frequentTraces.contains) }
-    } else targets
-
-    if (filteredTargets.size == 1)
-      return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
-
-    if (filteredTargets.isEmpty) return Seq.empty
-
-    var candidateSets = filteredTargets.combinations(2).map { pair =>
-      val combinedSet = pair.map(_._1).toSet
-      val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
-      (combinedSet, combinedCoverage)
-    }.toSeq
-
-    if (candidateSets.isEmpty) return Seq.empty
-
-    var lastValidTargets = candidateSets.head._1
-    var lastValidCoverage = candidateSets.head._2
-
-    var currentSetSize = 2
-
-    while (candidateSets.nonEmpty && currentSetSize < branchingBound) {
-      // Sort candidates by trace coverage and keep the top-1
-      val topCandidate = candidateSets.maxBy(_._2.size)
-      lastValidTargets = topCandidate._1
-      lastValidCoverage = topCandidate._2
-
-      // Check if the threshold is met
-      val currentSupport = lastValidCoverage.size.toDouble
-      if (currentSupport > 0 && threshold > 0 && currentSupport <= threshold) {
-        return Seq((lastValidTargets, lastValidCoverage))
-      }
 
       // Generate new candidates by increasing set size by 1
-      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
-        targets.filterNot(t => currentSet.contains(t._1)).map { t =>
-          val newSet = currentSet + t._1
-          val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
-          (newSet, newCoverage)
-        }
-      }
-
-      candidateSets = candidateSets.filter(_._2.nonEmpty)
-      currentSetSize += 1
-    }
-
-    Seq((lastValidTargets, lastValidCoverage))
-  }
-
-  private def findXORBranchesUnbounded(targets: Seq[(String, Set[String])],
-                                      frequentTraces: Set[String],
-                                      threshold: Double = 0,
-                                      dropThreshold: Double = 0.5): Seq[(Set[String], Set[String])] = {
-    if (targets.isEmpty) return Seq.empty
-
-    val filteredTargets = if (frequentTraces.nonEmpty) {
-      targets.filter { case (_, traceSet) => traceSet.exists(frequentTraces.contains) }
-    } else targets
-
-    if (filteredTargets.size == 1)
-      return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
-
-    var candidateSets = filteredTargets.combinations(2).map { pair =>
-      val combinedSet = pair.map(_._1).toSet
-      val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
-      (combinedSet, combinedCoverage)
-    }.toSeq
-
-    if (candidateSets.isEmpty) return Seq.empty
-
-    var lastValidTargets = candidateSets.head._1
-    var lastValidCoverage = candidateSets.head._2
-
-    if (lastValidCoverage.isEmpty)
-      return Seq((Set(filteredTargets.maxBy(_._2.size)._1), filteredTargets.maxBy(_._2.size)._2))
-
-    var sumOfReductions = 0.0
-    var sumOfReductions2 = 0.0
-    var countOfReductions = 0
-    var reductionStd = 0.0
-
-    while (candidateSets.nonEmpty) {
-      val topCandidate = candidateSets.maxBy(_._2.size)
-
-      val currentSupport = topCandidate._2.size.toDouble
-      if (currentSupport <= threshold) {
-        return Seq((lastValidTargets, lastValidCoverage))
-      }
-
-      sumOfReductions += currentSupport
-      sumOfReductions2 += Math.pow(currentSupport, 2)
-      countOfReductions += 1
-      val reductionMean = sumOfReductions / countOfReductions
-      reductionStd = Math.sqrt((sumOfReductions2 / countOfReductions) - Math.pow(reductionMean, 2))
-
-      if (Math.abs(currentSupport - reductionMean) > dropThreshold * reductionStd || currentSupport == 0) {
-        return Seq((lastValidTargets, lastValidCoverage))
-      }
-
-      lastValidTargets = topCandidate._1
-      lastValidCoverage = topCandidate._2
-
-      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
-        filteredTargets.filterNot(t => currentSet.contains(t._1)).map { t =>
-          val newSet = currentSet + t._1
-          val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
-          (newSet, newCoverage)
-        }
+      candidateSets = candidateSets.filter(_._1 == lastValidTargets)
+      candidateSets = if (!rule.contains("chain")) {
+        candidateSets.flatMap { case (currentSet, currentCoverage) =>
+          targets.filterNot(t => currentSet.contains(t._1)).map { t =>
+            val newSet = currentSet + t._1
+            val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
+            if (newCoverage.size > 1)
+              (newSet, newCoverage)
+            else
+              (Set.empty[String], Set.empty[String])
+          }
+        }.filter(_._1.nonEmpty)
+      } else {
+        candidateSets.flatMap { case (unionSet, traceSet) =>
+          // Find other union sets that differ by exactly one element
+          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
+            .map { case (otherUnionSet, otherTraceSet) =>
+              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
+              val extendedUnionSet = unionSet union otherUnionSet
+              // Step 3: Recompute the trace intersection
+              val extendedTraceSet = (traceSet union otherTraceSet) diff (traceSet intersect otherTraceSet)
+              (extendedUnionSet, extendedTraceSet)
+            }
+        }.filter(_._1.nonEmpty)
       }
 
       candidateSets = candidateSets.filter(_._2.nonEmpty)

@@ -84,7 +84,7 @@ object declare_mining {
         val branchingBound = config.branchingBound
         val filterRare = config.filterRare
         val dropFactor = config.dropFactor
-        val filterBounded = config.filterBounded
+        val filterBounded = if (branchingBound > 0) config.filterBounded else false
         val onlyNew = config.onlyNew
         val metaData = s3Connector.get_metadata()
 
@@ -209,16 +209,16 @@ object declare_mining {
           ordered_constraints match {
             case Right(x) => x match {
               case Left(x) => x.foreach(x => {
-                val formattedDouble = f"${x.support}%.3f"
+                val formattedDouble = f"${x.support}%.7f"
                 l += s"${x.rule}|${x.source}|${x.targets.mkString("(", ", ", ")")}|$formattedDouble\n"
               })
               case Right(x) => x.foreach(x => {
-                val formattedDouble = f"${x.support}%.3f"
+                val formattedDouble = f"${x.support}%.7f"
                 l += s"${x.rule}|${x.sources.mkString("(", ", ", ")")}|${x.target}|$formattedDouble\n"
               })
             }
             case Left(x) => x.foreach(x => {
-              val formattedDouble = f"${x.support}%.3f"
+              val formattedDouble = f"${x.support}%.7f"
               l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
             })
           }

@@ -383,7 +383,7 @@ object DeclareMining {
 
 
     //compute constraints using support and collect them
-    val constraints = if (policy == null || policy.isEmpty && branchingBound <= 1)
+    val constraints = if (policy == null || policy.isEmpty)
       Left(this.extractAllOrderedConstraints (updated_constraints,
                                         bUnique_traces_to_event_types,
                                         activity_matrix,
