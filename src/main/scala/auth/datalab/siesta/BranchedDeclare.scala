@@ -356,15 +356,17 @@ object BranchedDeclare {
         }.filter(_._1.nonEmpty)
       } else {
         candidateSets.flatMap { case (unionSet, traceSet) =>
-          // Find other union sets that differ by exactly one element
-          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
-            .map { case (otherUnionSet, otherTraceSet) =>
-              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
-              val extendedUnionSet = unionSet union otherUnionSet
-              // Step 3: Recompute the trace intersection
-              val extendedTraceSet = traceSet intersect otherTraceSet
-              (extendedUnionSet, extendedTraceSet)
+          pairConstraints.flatMap { case (r, keyInPair, rows) =>
+            if (r == rule && unionSet.last == keyInPair) {
+              rows.map { case (key, row) =>
+                val newUnionSet = unionSet + key
+                val newTraceSet = traceSet intersect row.toSet
+                (newUnionSet, newTraceSet)
+              }
+            } else {
+              None
             }
+          }
         }.filter(_._1.nonEmpty)
       }
 
@@ -456,20 +458,21 @@ object BranchedDeclare {
         }.filter(_._1.nonEmpty)
       } else {
         candidateSets.flatMap { case (unionSet, traceSet) =>
-          // Find other union sets that differ by exactly one element
-          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
-            .map { case (otherUnionSet, otherTraceSet) =>
-              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
-              val extendedUnionSet = unionSet union otherUnionSet
-              // Step 3: Recompute the trace intersection
-              val extendedTraceSet = traceSet intersect otherTraceSet
-              (extendedUnionSet, extendedTraceSet)
+          pairConstraints.flatMap { case (r, keyInPair, rows) =>
+            if (r == rule && unionSet.last == keyInPair) {
+              rows.map { case (key, row) =>
+                val newUnionSet = unionSet + key
+                val newTraceSet = traceSet intersect row.toSet
+                (newUnionSet, newTraceSet)
+              }
+            } else {
+              None
             }
+          }
         }.filter(_._1.nonEmpty)
       }
 
       candidateSets = candidateSets.filter(_._2.nonEmpty)
-
     }
     Seq((lastValidTargets, lastValidCoverage))
   }
@@ -491,23 +494,12 @@ object BranchedDeclare {
 
     if (filteredTargets.isEmpty) return Seq.empty
 
-    var candidateSets = if (!rule.contains("chain")) {
-      filteredTargets.combinations(2).map { pair =>
+    var candidateSets = filteredTargets.combinations(2).map { pair =>
         val combinedSet = pair.map(_._1).toSet
         val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
         (combinedSet, combinedCoverage)
       }.toSeq
-    } else {
-      filteredTargets.flatMap { case (key, traceSet) =>
-        pairConstraints.flatMap { case (r, keyInPair, rows) =>
-          if (r == rule && key == keyInPair) {
-            rows.map(row => (Set(key, row._1), (row._2.toSet union traceSet) diff (row._2.toSet intersect traceSet))).filter(_._2.nonEmpty)
-          } else {
-            None
-          }
-        }
-      }
-    }
+
 
     if (candidateSets.isEmpty) return Seq.empty
 
@@ -531,8 +523,7 @@ object BranchedDeclare {
 
       // Generate new candidates by increasing set size by 1
       candidateSets = candidateSets.filter(_._1 == lastValidTargets)
-      candidateSets = if (!rule.contains("chain")) {
-        candidateSets.flatMap { case (currentSet, currentCoverage) =>
+      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
           targets.filterNot(t => currentSet.contains(t._1)).map { t =>
             val newSet = currentSet + t._1
             val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
@@ -542,19 +533,6 @@ object BranchedDeclare {
               (Set.empty[String], Set.empty[String])
           }
         }.filter(_._1.nonEmpty)
-      } else {
-        candidateSets.flatMap { case (unionSet, traceSet) =>
-          // Find other union sets that differ by exactly one element
-          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
-            .map { case (otherUnionSet, otherTraceSet) =>
-              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
-              val extendedUnionSet = unionSet union otherUnionSet
-              // Step 3: Recompute the trace intersection
-              val extendedTraceSet = (traceSet union otherTraceSet) diff (traceSet intersect otherTraceSet)
-              (extendedUnionSet, extendedTraceSet)
-            }
-        }.filter(_._1.nonEmpty)
-      }
 
       candidateSets = candidateSets.filter(_._2.nonEmpty)
       currentSetSize += 1
@@ -578,23 +556,12 @@ object BranchedDeclare {
     if (filteredTargets.size == 1)
       return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
 
-    var candidateSets = if (!rule.contains("chain")) {
-      filteredTargets.combinations(2).map { pair =>
+    var candidateSets = filteredTargets.combinations(2).map { pair =>
         val combinedSet = pair.map(_._1).toSet
         val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
         (combinedSet, combinedCoverage)
       }.toSeq
-    } else {
-      filteredTargets.flatMap { case (key, traceSet) =>
-        pairConstraints.flatMap { case (r, keyInPair, rows) =>
-          if (r == rule && key == keyInPair) {
-            rows.map(row => (Set(key, row._1), (row._2.toSet union traceSet) diff (row._2.toSet intersect traceSet))).filter(_._2.nonEmpty)
-          } else {
-            None
-          }
-        }
-      }
-    }
+
 
     if (candidateSets.isEmpty) return Seq.empty
 
@@ -633,8 +600,7 @@ object BranchedDeclare {
 
       // Generate new candidates by increasing set size by 1
       candidateSets = candidateSets.filter(_._1 == lastValidTargets)
-      candidateSets = if (!rule.contains("chain")) {
-        candidateSets.flatMap { case (currentSet, currentCoverage) =>
+      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
           targets.filterNot(t => currentSet.contains(t._1)).map { t =>
             val newSet = currentSet + t._1
             val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
@@ -644,19 +610,6 @@ object BranchedDeclare {
               (Set.empty[String], Set.empty[String])
           }
         }.filter(_._1.nonEmpty)
-      } else {
-        candidateSets.flatMap { case (unionSet, traceSet) =>
-          // Find other union sets that differ by exactly one element
-          candidateSets.filter { case (otherUnionSet, _) => otherUnionSet.diff(unionSet).size == 1}
-            .map { case (otherUnionSet, otherTraceSet) =>
-              // Step 2: Extend the current unionSet by adding the one extra element from the matching set
-              val extendedUnionSet = unionSet union otherUnionSet
-              // Step 3: Recompute the trace intersection
-              val extendedTraceSet = (traceSet union otherTraceSet) diff (traceSet intersect otherTraceSet)
-              (extendedUnionSet, extendedTraceSet)
-            }
-        }.filter(_._1.nonEmpty)
-      }
 
       candidateSets = candidateSets.filter(_._2.nonEmpty)
     }
