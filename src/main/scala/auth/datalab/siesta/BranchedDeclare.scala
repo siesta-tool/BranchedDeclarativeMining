@@ -312,7 +312,7 @@ object BranchedDeclare {
     } else {
       filteredTargets.flatMap { case (key, traceSet) =>
         pairConstraints.flatMap { case (r, keyInPair, rows) =>
-          if (r == rule && key == keyInPair) {
+          if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && key == keyInPair) {
             rows.map(row => (Set(key, row._1), row._2.toSet intersect traceSet)).filter(_._2.nonEmpty)
           } else {
             None
@@ -357,7 +357,7 @@ object BranchedDeclare {
       } else {
         candidateSets.flatMap { case (unionSet, traceSet) =>
           pairConstraints.flatMap { case (r, keyInPair, rows) =>
-            if (r == rule && unionSet.last == keyInPair) {
+            if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && unionSet.last == keyInPair) {
               rows.map { case (key, row) =>
                 val newUnionSet = unionSet + key
                 val newTraceSet = traceSet intersect row.toSet
@@ -401,7 +401,7 @@ object BranchedDeclare {
     } else {
       filteredTargets.flatMap { case (key, traceSet) =>
         pairConstraints.flatMap { case (r, keyInPair, rows) =>
-          if (r == rule && key == keyInPair) {
+          if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && key == keyInPair) {
             rows.map(row => (Set(key, row._1), row._2.toSet intersect traceSet)).filter(_._2.nonEmpty)
           } else {
             None
@@ -412,8 +412,8 @@ object BranchedDeclare {
 
     if (candidateSets.isEmpty) return Seq.empty
 
-    var lastValidTargets = candidateSets.head._1
-    var lastValidCoverage = candidateSets.head._2
+    var lastValidTargets = candidateSets.maxBy(_._2.size)._1
+    var lastValidCoverage = candidateSets.maxBy(_._2.size)._2
 
     if (lastValidCoverage.isEmpty)
       return Seq((Set(filteredTargets.maxBy(_._2.size)._1), filteredTargets.maxBy(_._2.size)._2))
@@ -425,9 +425,8 @@ object BranchedDeclare {
 
     while (candidateSets.nonEmpty && lastValidCoverage.size > 1) {
       val topCandidate = candidateSets.maxBy(_._2.size)
-
       val currentSupport = topCandidate._2.size.toDouble
-      if (currentSupport <= threshold || currentSupport == 0) {
+      if (currentSupport <= threshold || currentSupport == 0 || topCandidate._1 == lastValidTargets && countOfReductions > 0) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
@@ -450,7 +449,7 @@ object BranchedDeclare {
           targets.filterNot(t => currentSet.contains(t._1)).map { t =>
             val newSet = currentSet + t._1
             val newCoverage = currentCoverage intersect t._2
-            if (newCoverage.size > 1)
+            if (newCoverage.size > 1 && newCoverage.intersect(lastValidCoverage) != Set.empty[String])
               (newSet, newCoverage)
             else
               (Set.empty[String], Set.empty[String])
@@ -459,7 +458,7 @@ object BranchedDeclare {
       } else {
         candidateSets.flatMap { case (unionSet, traceSet) =>
           pairConstraints.flatMap { case (r, keyInPair, rows) =>
-            if (r == rule && unionSet.last == keyInPair) {
+            if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && unionSet.last == keyInPair) {
               rows.map { case (key, row) =>
                 val newUnionSet = unionSet + key
                 val newTraceSet = traceSet intersect row.toSet
@@ -494,11 +493,23 @@ object BranchedDeclare {
 
     if (filteredTargets.isEmpty) return Seq.empty
 
-    var candidateSets = filteredTargets.combinations(2).map { pair =>
+    var candidateSets = if (!rule.contains("chain")) {
+      filteredTargets.combinations(2).map { pair =>
         val combinedSet = pair.map(_._1).toSet
         val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
         (combinedSet, combinedCoverage)
       }.toSeq
+    } else {
+      filteredTargets.flatMap { case (key, traceSet) =>
+        pairConstraints.flatMap { case (r, keyInPair, rows) =>
+          if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && key == keyInPair) {
+            rows.map(row => (Set(key, row._1), (row._2.toSet union traceSet) diff (row._2.toSet intersect traceSet))).filter(_._2.nonEmpty)
+          } else {
+            None
+          }
+        }
+      }
+    }
 
 
     if (candidateSets.isEmpty) return Seq.empty
@@ -523,7 +534,8 @@ object BranchedDeclare {
 
       // Generate new candidates by increasing set size by 1
       candidateSets = candidateSets.filter(_._1 == lastValidTargets)
-      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
+      candidateSets = if (!rule.contains("chain")) {
+        candidateSets.flatMap { case (currentSet, currentCoverage) =>
           targets.filterNot(t => currentSet.contains(t._1)).map { t =>
             val newSet = currentSet + t._1
             val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
@@ -533,6 +545,21 @@ object BranchedDeclare {
               (Set.empty[String], Set.empty[String])
           }
         }.filter(_._1.nonEmpty)
+      } else {
+        candidateSets.flatMap { case (unionSet, traceSet) =>
+          pairConstraints.flatMap { case (r, keyInPair, rows) =>
+            if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && unionSet.last == keyInPair) {
+              rows.map { case (key, row) =>
+                val newUnionSet = unionSet + key
+                val newTraceSet = (traceSet union row.toSet) diff (traceSet intersect row.toSet)
+                (newUnionSet, newTraceSet)
+              }
+            } else {
+              None
+            }
+          }
+        }.filter(_._1.nonEmpty)
+      }
 
       candidateSets = candidateSets.filter(_._2.nonEmpty)
       currentSetSize += 1
@@ -556,17 +583,30 @@ object BranchedDeclare {
     if (filteredTargets.size == 1)
       return Seq((Set(filteredTargets.head._1), filteredTargets.head._2))
 
-    var candidateSets = filteredTargets.combinations(2).map { pair =>
+    var candidateSets = if (!rule.contains("chain")) {
+      filteredTargets.combinations(2).map { pair =>
         val combinedSet = pair.map(_._1).toSet
         val combinedCoverage = (pair.head._2 union pair.last._2) diff (pair.head._2 intersect pair.last._2)
         (combinedSet, combinedCoverage)
       }.toSeq
+    } else {
+      filteredTargets.flatMap { case (key, traceSet) =>
+        pairConstraints.flatMap { case (r, keyInPair, rows) =>
+          if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && key == keyInPair) {
+            rows.map(row => (Set(key, row._1), (row._2.toSet union traceSet) diff (row._2.toSet intersect traceSet))).filter(_._2.nonEmpty)
+          } else {
+            None
+          }
+        }
+      }
+    }
+
 
 
     if (candidateSets.isEmpty) return Seq.empty
 
-    var lastValidTargets = candidateSets.head._1
-    var lastValidCoverage = candidateSets.head._2
+    var lastValidTargets = candidateSets.maxBy(_._2.size)._1
+    var lastValidCoverage = candidateSets.maxBy(_._2.size)._2
 
     if (lastValidCoverage.isEmpty)
       return Seq((Set(filteredTargets.maxBy(_._2.size)._1), filteredTargets.maxBy(_._2.size)._2))
@@ -581,7 +621,7 @@ object BranchedDeclare {
 
       val currentSupport = topCandidate._2.size.toDouble
 //      println(candidateSets.size, topCandidate._1.size, topCandidate._2.size)
-      if (currentSupport <= threshold || currentSupport == 0) {
+      if (currentSupport <= threshold || currentSupport == 0 || topCandidate._1 == lastValidTargets && countOfReductions > 0) {
         return Seq((lastValidTargets, lastValidCoverage))
       }
 
@@ -600,7 +640,8 @@ object BranchedDeclare {
 
       // Generate new candidates by increasing set size by 1
       candidateSets = candidateSets.filter(_._1 == lastValidTargets)
-      candidateSets = candidateSets.flatMap { case (currentSet, currentCoverage) =>
+      candidateSets = if (!rule.contains("chain")) {
+        candidateSets.flatMap { case (currentSet, currentCoverage) =>
           targets.filterNot(t => currentSet.contains(t._1)).map { t =>
             val newSet = currentSet + t._1
             val newCoverage = (currentCoverage union t._2) diff (currentCoverage intersect t._2)
@@ -610,6 +651,21 @@ object BranchedDeclare {
               (Set.empty[String], Set.empty[String])
           }
         }.filter(_._1.nonEmpty)
+      } else {
+        candidateSets.flatMap { case (unionSet, traceSet) =>
+          pairConstraints.flatMap { case (r, keyInPair, rows) =>
+            if (rule.split("chain-").length > 1 && r == rule.split("chain-")(1) && unionSet.last == keyInPair) {
+              rows.map { case (key, row) =>
+                val newUnionSet = unionSet + key
+                val newTraceSet = (traceSet union row.toSet) diff (traceSet intersect row.toSet)
+                (newUnionSet, newTraceSet)
+              }
+            } else {
+              None
+            }
+          }
+        }.filter(_._1.nonEmpty)
+      }
 
       candidateSets = candidateSets.filter(_._2.nonEmpty)
     }

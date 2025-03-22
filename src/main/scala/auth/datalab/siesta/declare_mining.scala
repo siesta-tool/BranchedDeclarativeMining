@@ -223,6 +223,7 @@ object declare_mining {
             })
           }
 
+          println("Constraints mined: " + l.size)
           val file = "constraints_" + config.logname + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
                       config.branchingPolicy + ".txt"
           val writer = new BufferedWriter(new FileWriter(file))
