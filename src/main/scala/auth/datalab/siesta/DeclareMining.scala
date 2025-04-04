@@ -337,7 +337,7 @@ object DeclareMining {
               }
             })
 
-          //response loop
+          // response loop
           eventsPositionsMap.keySet.filter(x => x != current_event_type)
             .foreach(activity_a => {
               var largest = true
@@ -361,8 +361,46 @@ object DeclareMining {
       .reduceByKey((x, y) => PairConstraint(x.rule, x.eventA, x.eventB, x.traces ++ y.traces))
       .map(_._2)
 
-    // merge with previous values if exist
+    val succession_constraints = new_ordered_relations.toDS()
+      .filter(pc => pc.rule == "precedence" || pc.rule == "response")
+      .groupByKey(pc => (pc.eventA, pc.eventB))
+      .mapGroups { case ((eventA, eventB), constraints) =>
+        val tracesWithPrecedence = constraints.filter(_.rule == "precedence").flatMap(_.traces).toSet
+        val tracesWithResponse = constraints.filter(_.rule == "response").flatMap(_.traces).toSet
+        val commonTraces = tracesWithPrecedence.intersect(tracesWithResponse)
+        if (commonTraces.nonEmpty) Some(PairConstraint("succession", eventA, eventB, commonTraces.toArray))
+        else None }
+      .filter(_.isDefined).map(_.get)
+
+    // Extract chain succession constraints
+    val chain_succession_constraints = new_ordered_relations.toDS()
+      .filter(pc => pc.rule == "chain-precedence" || pc.rule == "chain-response")
+      .groupByKey(pc => (pc.eventA, pc.eventB))
+      .mapGroups { case ((eventA, eventB), constraints) =>
+        val tracesWithChainPrecedence = constraints.filter(_.rule == "chain-precedence").flatMap(_.traces).toSet
+        val tracesWithChainResponse = constraints.filter(_.rule == "chain-response").flatMap(_.traces).toSet
+        val commonTraces = tracesWithChainPrecedence.intersect(tracesWithChainResponse)
+        if (commonTraces.nonEmpty) Some(PairConstraint("chain-succession", eventA, eventB, commonTraces.toArray))
+        else None }
+      .filter(_.isDefined).map(_.get)
+
+    // Extract alternate succession constraints
+    val alternate_succession_constraints = new_ordered_relations.toDS()
+      .filter(pc => pc.rule == "alternate-precedence" || pc.rule == "alternate-response")
+      .groupByKey(pc => (pc.eventA, pc.eventB))
+      .mapGroups { case ((eventA, eventB), constraints) =>
+        val tracesWithAltPrecedence = constraints.filter(_.rule == "alternate-precedence").flatMap(_.traces).toSet
+        val tracesWithAltResponse = constraints.filter(_.rule == "alternate-response").flatMap(_.traces).toSet
+        val commonTraces = tracesWithAltPrecedence.intersect(tracesWithAltResponse)
+        if (commonTraces.nonEmpty) Some(PairConstraint("alternate-succession", eventA, eventB, commonTraces.toArray))
+        else None }
+      .filter(_.isDefined).map(_.get)
+
+    // Merge with all discovered constraints previous values if exist
     val updated_constraints = new_ordered_relations
+      .union(succession_constraints.rdd)
+      .union(chain_succession_constraints.rdd)
+      .union(alternate_succession_constraints.rdd)
       .keyBy(x => (x.rule, x.eventA, x.eventB))
       .fullOuterJoin(previously.rdd.keyBy(x => (x.rule, x.eventA, x.eventB)))
       .map(x => PairConstraint(x._1._1, x._1._2, x._1._3,
@@ -373,14 +411,9 @@ object DeclareMining {
     updated_constraints.count()
     updated_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-    //    write updated constraints back to s3
-//    updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
-    val flattenedConstraints = updated_constraints.flatMap(pc =>
-      pc.traces.map(trace => PairConstraintRow(pc.rule, pc.eventA, pc.eventB, trace))
-    )
-
-    flattenedConstraints.write.mode(SaveMode.Overwrite).parquet(order_path)
-
+    // Write updated constraints back to s3
+    updated_constraints.flatMap(pc => pc.traces.map(trace => PairConstraintRow(pc.rule, pc.eventA, pc.eventB, trace)))
+      .write.mode(SaveMode.Overwrite).parquet(order_path)
 
     //compute constraints using support and collect them
     val constraints = if (policy == null || policy.isEmpty)
@@ -573,12 +606,12 @@ object DeclareMining {
         }
         l += Constraint(c.rule, c.eventA, c.eventB, sup) // add the support to the constraint
         if (c.rule.contains("chain")) {
-          l += Constraint("chain-succession", c.eventA, c.eventB, sup)
+//          l += Constraint("chain-succession", c.eventA, c.eventB, sup)
           l += Constraint("not-chain-succession", c.eventA, c.eventB, 1 - sup)
         } else if (c.rule.contains("alternate")) {
-          l += Constraint("alternate-succession", c.eventA, c.eventB, sup)
+//          l += Constraint("alternate-succession", c.eventA, c.eventB, sup)
         } else {
-          l += Constraint("succession", c.eventA, c.eventB, sup)
+//          l += Constraint("succession", c.eventA, c.eventB, sup)
           l += Constraint("not-succession", c.eventA, c.eventB, 1 - sup)
         }
         l.toList
