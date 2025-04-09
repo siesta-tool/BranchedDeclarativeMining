@@ -81,7 +81,7 @@ class S3Connector {
     import spark.implicits._
     spark.read.parquet(this.seq_table)
       .map(x => {
-        Event(trace_id = x.getAs[String]("trace_id"), ts = x.getAs[String]("timestamp"), event_type = x.getAs[String]("event_type"),
+        Event(trace = x.getAs[String]("trace_id"), ts = x.getAs[String]("timestamp"), eventType = x.getAs[String]("event_type"),
           pos = x.getAs[Int]("position"))
       })
   }
