@@ -17,7 +17,7 @@ object Structs {
                     dropFactor: Double = 1.5,
                     filterRare: Boolean = false,
                     filterUnderBound: Boolean = false,
-                    onlyNew: Boolean = true)
+                    hardRediscovery: Boolean = false)
 
   case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)
 

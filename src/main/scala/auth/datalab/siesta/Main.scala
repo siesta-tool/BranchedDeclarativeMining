@@ -37,7 +37,7 @@ object Main {
 
         opt[String]('t', "branchingType")
           .action((x, c) => c.copy(branchingType = x.toUpperCase))
-          .text("Branching type, default is 'TARGET'"),
+          .text("Branching type, default is 'TARGET' if policy is set"),
 
         opt[Int]('b', "branchingBound")
           .action((x, c) => c.copy(branchingBound = x))
@@ -55,9 +55,9 @@ object Main {
           .action((x, c) => c.copy(filterUnderBound = x))
           .text("Filter out under-bound templates, default is false"),
 
-        opt[Boolean]('n', "onlyNew")
-          .action((x, c) => c.copy(onlyNew = x))
-          .text("Find only new constraints, default is true")
+        opt[Boolean]('h', "hardRediscover")
+          .action((x, c) => c.copy(hardRediscovery = x))
+          .text("Hard rediscovery, default is false")
       )
     }
 
@@ -72,7 +72,7 @@ object Main {
         println(s"Reduction Drop factor: ${config.dropFactor}")
         println(s"Filter out Rare events: ${config.filterRare}")
         println(s"Filter out under-bound templates: ${config.filterUnderBound}")
-        println(s"Find only new constraints: ${config.onlyNew}")
+        println(s"Find all constraints from beginning: ${config.hardRediscovery}")
 
         val support = config.support
         val branchingPolicy = config.branchingPolicy
@@ -81,7 +81,7 @@ object Main {
         val filterRare = config.filterRare
         val dropFactor = config.dropFactor
         val filterUnderBound = if (branchingBound > 0) config.filterUnderBound else false
-        val onlyNew = config.onlyNew
+        val hardRediscover = config.hardRediscovery
         val metaData = s3Connector.get_metadata()
 
         val spark = SparkSession.builder().getOrCreate()
@@ -103,7 +103,7 @@ object Main {
 
           /** Retain separately only the newly arrived events */
           val prevMiningTs = metaData.last_declare_mined
-          val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || onlyNew) events
+          val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || hardRediscover) events
                           else events.filter(e => {Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.ts))})
 
           /** Distinguish traces that only evolved; the bounds include the new events */
@@ -145,7 +145,8 @@ object Main {
             branchingBound = branchingBound,
             filterRare = filterRare,
             dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound)
+            filterUnderBound = filterUnderBound,
+            hardRediscover = hardRediscover)
 
           /** Existence patterns */
 //          val existence = DeclareMining.extractExistenceConstraints(
@@ -168,7 +169,7 @@ object Main {
 
           val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
             bEventTypeOccurrencesMap, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
-            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
+            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
           //handle negative pairs = pairs that does not appear not even once in the data
           //      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
