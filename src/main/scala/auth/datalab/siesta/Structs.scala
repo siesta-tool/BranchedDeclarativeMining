@@ -27,7 +27,8 @@ object Structs {
   case class PositionConstraintRow(rule: String, eventType: String, trace: String)
 
   // each activity existed exactly <instances> times in these <traces>
-  case class ActivityExactly(event_type:String, instances:Long, traces:Array[String])
+  case class ExactlyConstraint(rule: String, eventType:String, instances:Long, traces:Array[String])
+  case class ExactlyConstraintRow(rule:String, eventType:String, instances:Long, trace:String)
 
   case class ExistenceConstraint(rule:String, event_type:String, n: Int, traces:Array[String])
   case class PairConstraintRow(rule: String, eventA: String, eventB: String, trace: String)
@@ -37,6 +38,7 @@ object Structs {
   case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)
 
   case class PairConstraintSupported(rule:String, activation:String, target:String, support:Double) extends Serializable
+  case class Constraint(rule:String, activation:String, target:String, support:Double) extends Serializable
 
   // Target-branched constraint with a single source and multiple targets
   case class TargetBranchedPairConstraint(

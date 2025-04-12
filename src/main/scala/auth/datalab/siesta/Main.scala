@@ -93,11 +93,11 @@ object Main {
 
           /** Create a map event_type -> #total occurrences in log */
           val eventTypeOccurrencesMap: scala.collection.Map[String, Long] = events
-            .select("event_type", "trace_id")
-            .groupBy("event_type")
-            .agg(functions.count("trace_id").alias("unique"))
+            .select("eventType", "trace")
+            .groupBy("eventType")
+            .agg(functions.count("trace").alias("unique"))
             .collect()
-            .map(row => (row.getAs[String]("event_type"), row.getAs[Long]("unique")))
+            .map(row => (row.getAs[String]("eventType"), row.getAs[Long]("unique")))
             .toMap
           val bEventTypeOccurrencesMap = spark.sparkContext.broadcast(eventTypeOccurrencesMap)
 
@@ -108,9 +108,9 @@ object Main {
 
           /** Distinguish traces that only evolved; the bounds include the new events */
           val evolvedTracesBounds: scala.collection.Map[String, (Int, Int)] = newEvents
-            .groupBy("trace_id")
+            .groupBy("trace")
             .agg(functions.min("pos"), functions.max("pos"))
-            .map(x => (x.getAs[String]("trace_id"), (x.getAs[Int]("min(pos)"), x.getAs[Int]("max(pos)"))))
+            .map(x => (x.getAs[String]("trace"), (x.getAs[Int]("min(pos)"), x.getAs[Int]("max(pos)"))))
             .rdd
             .keyBy(_._1)
             .mapValues(_._2)
@@ -122,7 +122,7 @@ object Main {
           /**
            * Retain the all events that belong to an evolved trace since already-mined constraints may be affected from these traces
            */
-          val affectedEvents = events.filter(functions.col("trace_id").isin(bEvolvedTracesIds.value:_*))
+          val affectedEvents = events.filter(functions.col("trace").isin(bEvolvedTracesIds.value:_*))
           affectedEvents.count()
           affectedEvents.persist(StorageLevel.MEMORY_AND_DISK)
 
@@ -137,7 +137,7 @@ object Main {
            */
           val position = DeclareMining.extractPositionConstraints(
             logName = metaData.log_name,
-            newEvents = affectedEvents,
+            affectedEvents = affectedEvents,
             bEvolvedTracesBounds = bEvolvedTracesBounds,
             supportThreshold = support,
             totalTraces = metaData.traces,
@@ -147,10 +147,18 @@ object Main {
             dropFactor = dropFactor,
             filterUnderBound = filterUnderBound)
 
-          //extract existence
-//          val existence_constraints = DeclareMining.extractExistence(logname = metaData.log_name,
-//            affectedEvents = affectedEvents, bEvolvedTracesBounds = bEvolvedTracesBounds,
-//            support = support, total_traces = metaData.traces, branchingPolicy)
+          /** Existence patterns */
+//          val existence = DeclareMining.extractExistenceConstraints(
+//            logName = metaData.log_name,
+//            affectedEvents = affectedEvents,
+//            bEvolvedTracesBounds = bEvolvedTracesBounds,
+//            supportThreshold = support,
+//            totalTraces = metaData.traces,
+//            branchingPolicy = branchingPolicy,
+//            branchingBound = branchingBound,
+//            filterRare = filterRare,
+//            dropFactor = dropFactor,
+//            filterUnderBound = filterUnderBound)
 
           //extract unordered
           //      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, affectedEvents,
@@ -210,36 +218,30 @@ object Main {
 //              l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
 //            })
 //          }
-//
-//          println("Constraints mined: " + l.size)
-//          val file = "constraints_" + config.logName + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
-//                      config.branchingPolicy + ".txt"
-//          val writer = new BufferedWriter(new FileWriter(file))
-//          l.toList.foreach(writer.write)
-//          writer.close()
-//
-//          if (!newEvents.isEmpty) {
-//            val last_ts = newEvents.rdd
-//              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => {
-//                if (x.after(y)) {
-//                  x
-//                } else {
-//                  y
-//                }
-//              })
-//            metaData.last_declare_mined = last_ts.toString
-//            s3Connector.write_metadata(metaData)
-//          }
-//
+
 //          //TODO: change support/ total traces to broadcasted variables
 //
-//          events.unpersist()
-//          activity_matrix.unpersist()
-//          affectedEvents.unpersist()
-          //      complete_pairs_that_changed.unpersist()
+          events.unpersist()
+          activity_matrix.unpersist()
+          affectedEvents.unpersist()
+
+          ordered.union(position).foreach(x => {
+            val formattedDouble = f"${x._3}%.7f"
+            l += s"${x._1}|${x._2}|$formattedDouble\n"
+          })
+          println("Constraints mined: " + l.size)
+          val file = "constraints_" + config.logName + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
+            config.branchingPolicy + ".txt"
+          val writer = new BufferedWriter(new FileWriter(file))
+          l.toList.foreach(writer.write)
+          writer.close()
+
+          if (!newEvents.isEmpty) {
+            metaData.last_declare_mined = newEvents.rdd
+              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
+            s3Connector.write_metadata(metaData)
+          }
         })
-
-
       case _ =>
         throw new IllegalArgumentException("Wrong configuration!")
     }
