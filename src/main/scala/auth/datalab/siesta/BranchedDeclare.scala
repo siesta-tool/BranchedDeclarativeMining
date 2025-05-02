@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{PairConstraint, PositionConstraint, SourceBranchedPairConstraint, TargetBranchedPairConstraint}
+import auth.datalab.siesta.Structs.{ExactlyConstraint, PairConstraint, PositionConstraint, SourceBranchedPairConstraint, TargetBranchedPairConstraint}
 import org.apache.spark.sql.functions.{collect_set, count, explode, pow}
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
@@ -15,7 +15,7 @@ object BranchedDeclare {
                                           branchingBound: Int = 2,
                                           dropFactor: Double = 2.5,
                                           filterUnderBound: Boolean = false,
-                                          filterRare: Boolean = false): Array[(String, Array[String], Double)] = {
+                                          filterRare: Boolean = false): Array[(String, String, Double)] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -48,11 +48,55 @@ object BranchedDeclare {
     }.filter(_._3 > support)
 
     if (filterUnderBound)
-      result.filter(_._2.length == branchingBound).collect()
+      result.filter(_._2.length == branchingBound).map(x => (x._1, x._2.mkString(","), x._3)).collect()
     else
-      result.collect()
+      result.map(x => (x._1, x._2.mkString(","), x._3)).collect()
   }
 
+  def extractBranchedExistenceConstraints( constraints: Dataset[ExactlyConstraint],
+                                          totalTraces: Long,
+                                          support: Double = 0,
+                                          policy: String = "OR",
+                                          branchingBound: Int = 2,
+                                          dropFactor: Double = 2.5,
+                                          filterUnderBound: Boolean = false,
+                                          filterRare: Boolean = false): Array[(String, String, Double)] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    // Group the constraints by rule
+    val result = constraints.groupByKey(_.instances.toString).mapGroups { case (rule, iter) =>
+      val eventMap = iter.map(c => (c.eventType, c.traces.toSet)).toSeq
+
+      // Compute frequent traces for "AND" and "XOR" branching if needed
+      val frequentTraces = if (!filterRare && policy != "OR")
+        eventMap.flatMap(_._2).groupBy(identity)
+          .mapValues(_.size)
+          .filter(_._2 == eventMap.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
+          .keys.toSet
+      else
+        Set.empty[String]
+
+      // Choose the appropriate find method based on policy
+      val result = (policy, branchingBound > 1) match {
+        case ("OR", true) => findORBranchesBounded(eventMap, branchingBound)
+        case ("OR", false) => findORBranchesUnbounded(eventMap, support, dropFactor)
+        case ("AND", true) => findANDBranchesBounded(null, rule, eventMap, frequentTraces, support * totalTraces, branchingBound)
+        case ("AND", false) => findANDBranchesUnbounded(null, rule, eventMap, frequentTraces, support * totalTraces)
+        case ("XOR", true) => findXORBranchesBounded(null, rule, eventMap, frequentTraces, support * totalTraces, branchingBound)
+        case ("XOR", false) => findXORBranchesUnbounded(null, rule, eventMap, frequentTraces, support * totalTraces)
+        case _ => throw new IllegalArgumentException(s"Unsupported branching policy: $policy")
+      }
+      val events = result.flatMap(_._1)   // Extract event names
+      val traces = result.flatMap(_._2)   // Extract associated trace sets
+      (rule, events.toArray, traces.toArray.length.toDouble / totalTraces)
+    }.filter(_._3 > support)
+
+    if (filterUnderBound)
+      result.filter(_._2.length == branchingBound).map(x => (x._1, x._2.mkString(","), x._3)).collect()
+    else
+      result.map(x => (x._1, x._2.mkString(","), x._3)).collect()
+  }
 
 
 
@@ -77,16 +121,15 @@ object BranchedDeclare {
                                    branchingType: String = "TARGET",
                                    branchingBound: Int = 2,
                                    dropFactor: Double = 2.5,
-                                   filterBounded: Boolean = false,
-                                   filterRare: Option[Boolean] = Some(false))
-                                  : Array[(String, String, Double)] = {
+                                   filterUnderBound: Boolean = false,
+                                   filterRare: Boolean = false): Array[(String, String, Double)] = {
     if (branchingType == "TARGET")
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
-        filterRare, dropFactor = dropFactor, filterBounded = filterBounded)
+        filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
     else if (branchingType == "SOURCE")
 
         getSourceBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
-        filterRare, dropFactor = dropFactor, filterBounded = filterBounded)
+        filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
     else
       throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
   }
@@ -98,8 +141,8 @@ object BranchedDeclare {
                                            policy: String = "OR",
                                            dropFactor: Double = 2.5,
                                            filterBounded: Boolean = false,
-                                           filterRare: Option[Boolean] = Some(false),
-                                           printNum: Option[Boolean] = Some(false)): Array[(String, String, Double)] = {
+                                           filterRare: Boolean = false,
+                                           printNum: Boolean = false): Array[(String, String, Double)] = {
       val spark = SparkSession.builder().getOrCreate()
       import spark.implicits._
 
@@ -123,7 +166,7 @@ object BranchedDeclare {
           }
 
           // Compute frequent traces for "AND" and "XOR" branching if needed
-          val frequentTraces = if (filterRare.getOrElse(false) && policy != "OR")
+          val frequentTraces = if (filterRare && policy != "OR")
             targetEventData.flatMap(_._2).groupBy(identity)
               .mapValues(_.size)
               .filter(_._2 == targetEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
@@ -153,7 +196,7 @@ object BranchedDeclare {
           TargetBranchedPairConstraint(rule, activationEvent, targetEvents.toArray, totalUniqueTraces / totalTraces)
         }.filter(_.support > threshold)
 
-    if (printNum.get)
+    if (printNum)
       println(s"$policy # = " + groupedConstraints.filter(_.support > threshold).count())
 
     var result = groupedConstraints
@@ -170,8 +213,8 @@ object BranchedDeclare {
                                            policy: String = "OR",
                                            dropFactor: Double = 2.5,
                                            filterBounded: Boolean = false,
-                                           filterRare: Option[Boolean] = Some(false),
-                                           printNum: Option[Boolean] = Some(false)): Array[(String, String, Double)] = {
+                                           filterRare: Boolean = false,
+                                           printNum: Boolean = false): Array[(String, String, Double)] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -193,7 +236,7 @@ object BranchedDeclare {
         }
 
         // Compute frequent traces for "AND" and "XOR" branching if needed
-        val frequentTraces = if (filterRare.getOrElse(false) && policy != "OR")
+        val frequentTraces = if (filterRare && policy != "OR")
           sourceEventData.flatMap(_._2).groupBy(identity)
             .mapValues(_.size)
             .filter(_._2 == sourceEventData.flatMap(_._2).groupBy(identity).mapValues(_.size).values.max)
@@ -228,7 +271,7 @@ object BranchedDeclare {
         )
       }.filter(_.support > threshold)
 
-    if (printNum.get)
+    if (printNum)
       println(s"$policy # = " + groupedConstraints.filter(_.support >= threshold).count())
 
     var result = groupedConstraints

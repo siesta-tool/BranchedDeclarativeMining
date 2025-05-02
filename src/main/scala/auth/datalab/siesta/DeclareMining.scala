@@ -102,9 +102,8 @@ object DeclareMining {
         }
       }
     else {
-      val branchedResponse = BranchedDeclare.extractBranchedPositionConstraints(response, totalTraces, supportThreshold, branchingPolicy,
+      BranchedDeclare.extractBranchedPositionConstraints(response, totalTraces, supportThreshold, branchingPolicy,
         branchingBound, dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
-      branchedResponse.foreach(x =>  result = result :+ (x._1, x._2.mkString(","), x._3))
     }
     constraints.unpersist()
     result
@@ -170,7 +169,13 @@ object DeclareMining {
         }
       }
     else {
-      null
+      // We consider the existence constraints implicitly as pair constraints (eventB = instances),
+      // and we use the same extraction method as for pair constraints, but we branch always for the
+      // same eventB (instances) -> source branching
+      val dummyImplicit = response.map(x => PairConstraint(x.rule, x.eventType, x.instances.toString, x.traces))
+      BranchedDeclare.extractAllOrderedConstraints(dummyImplicit, totalTraces = totalTraces, support = supportThreshold,
+        policy = branchingPolicy, branchingType = "SOURCE", branchingBound = branchingBound,
+        dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
     }
     result
   }
@@ -422,9 +427,8 @@ object DeclareMining {
                                                     branchingType,
                                                     branchingBound,
                                                     dropFactor = dropFactor,
-                                                    filterRare = Some(filterRare),
-                                                    filterBounded = filterBounded)
-
+                                                    filterRare = filterRare,
+                                                    filterUnderBound = filterBounded)
     pairConstraints.unpersist()
     constraints
   }

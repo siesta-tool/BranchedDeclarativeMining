@@ -149,17 +149,17 @@ object Main {
             hardRediscover = hardRediscover)
 
           /** Existence patterns */
-//          val existence = DeclareMining.extractExistenceConstraints(
-//            logName = metaData.log_name,
-//            affectedEvents = affectedEvents,
-//            bEvolvedTracesBounds = bEvolvedTracesBounds,
-//            supportThreshold = support,
-//            totalTraces = metaData.traces,
-//            branchingPolicy = branchingPolicy,
-//            branchingBound = branchingBound,
-//            filterRare = filterRare,
-//            dropFactor = dropFactor,
-//            filterUnderBound = filterUnderBound)
+          val existence = DeclareMining.extractExistenceConstraints(
+            logName = metaData.log_name,
+            affectedEvents = affectedEvents,
+            bEvolvedTracesBounds = bEvolvedTracesBounds,
+            supportThreshold = support,
+            totalTraces = metaData.traces,
+            branchingPolicy = branchingPolicy,
+            branchingBound = branchingBound,
+            filterRare = filterRare,
+            dropFactor = dropFactor,
+            filterUnderBound = filterUnderBound)
 
           //extract unordered
           //      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, affectedEvents,
