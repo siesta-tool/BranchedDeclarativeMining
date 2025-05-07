@@ -140,14 +140,13 @@ object DeclareMining {
       .select($"rule", $"eventType", $"instances", $"trace")
       .as[ExactlyConstraintRow]
 
-
     // Filter out oldConstraints to exclude existence measurements for the traces
     // that have evolved and keep only the unrelated ones
     val filteredPreviously = oldConstraints
       .join(newConstraints.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
       .as[ExactlyConstraintRow]
 
-    val finalConstraints = newConstraints.union(filteredPreviously)
+    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"eventType", $"instances", $"trace").as[ExactlyConstraintRow])
 
     finalConstraints.count()
     finalConstraints.persist(StorageLevel.MEMORY_AND_DISK)
@@ -270,7 +269,7 @@ object DeclareMining {
     UUpdated.persist(StorageLevel.MEMORY_AND_DISK)
     UUpdated.write.mode(SaveMode.Overwrite).parquet(UPath)
 
-    // Get previous I[a,b] \union I[b,a] if exist
+    // Get previous I[a,b] union I[b,a] if exist
     val IPath = s"""s3a://siesta/$logName/declare/unorder/i.parquet/"""
     val IStored = try {
       spark.read.parquet(IPath).as[IRow]
