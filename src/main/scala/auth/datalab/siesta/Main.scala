@@ -102,6 +102,7 @@ object Main {
           val bEventTypeOccurrencesMap = spark.sparkContext.broadcast(eventTypeOccurrencesMap)
 
           val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
+          val bTraceIds = spark.sparkContext.broadcast(traceIds)
 
           /** Retain separately only the newly arrived events */
           val prevMiningTs = metaData.last_declare_mined
@@ -165,21 +166,21 @@ object Main {
           /** Unordered patterns */
           val unorder = DeclareMining.extractUnordered(
             logName = metaData.log_name,
+            bEvolvedTracesBounds = bEvolvedTracesBounds,
             affectedEvents = affectedEvents,
-            activity_matrix,
-            traceIds,
+            bTraceIds = bTraceIds,
+            activity_matrix = activity_matrix,
             supportThreshold = support,
-            totalTraces = metaData.traces,
             branchingPolicy = branchingPolicy,
             branchingBound = branchingBound,
+            branchingType = branchingType,
             filterRare = filterRare,
             dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound))
+            filterUnderBound = filterUnderBound)
 
           //extract order relations
-
           val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
-            bEventTypeOccurrencesMap, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
+            bTraceIds, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
             branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
           //handle negative pairs = pairs that does not appear not even once in the data
@@ -237,7 +238,7 @@ object Main {
           activity_matrix.unpersist()
           affectedEvents.unpersist()
 
-          ordered.union(position).union(existence).foreach(x => {
+          ordered.union(position).union(existence).union(unorder).foreach(x => {
             val formattedDouble = f"${x._3}%.7f"
             l += s"${x._1}|${x._2}|$formattedDouble\n"
           })

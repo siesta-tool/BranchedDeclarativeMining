@@ -174,7 +174,7 @@ object DeclareMining {
       // same eventB (instances) -> source branching
       val dummyImplicit = response.map(x => PairConstraint(x.rule, x.eventType, x.instances.toString, x.traces))
       result = BranchedDeclare.extractBranchedPairConstraints(dummyImplicit, totalTraces = totalTraces, support = supportThreshold,
-        policy = branchingPolicy, branchingType = b , branchingBound = branchingBound,
+        policy = branchingPolicy, branchingType = "SOURCE" , branchingBound = branchingBound,
         dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
     }
     finalConstraints.unpersist()
@@ -184,7 +184,7 @@ object DeclareMining {
   def extractUnordered(logName: String,
                        affectedEvents: Dataset[Event],
                        bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-                       traceIds: Set[String],
+                       bTraceIds: Broadcast[Set[String]],
                        activity_matrix: RDD[(String, String)],
                        supportThreshold: Double,
                        branchingPolicy: String,
@@ -281,20 +281,20 @@ object DeclareMining {
 
     val UUpdatedReduced = UUpdated.rdd.map(x => (x._1, Set(x._2))).reduceByKey(_ ++ _).toDS()
     val IRowsNewReduced = IUpdated.rdd.map(x => ((x._1, x._2), Set(x._3))).reduceByKey(_ ++ _).map(x => (x._1._1, x._1._2, x._2)).toDS()
-    val completeSingleConstraints = this.extractAllUnorderedConstraints(UUpdatedReduced, IRowsNewReduced, traceIds, activity_matrix)
+    val completeSingleConstraints = this.extractAllUnorderedConstraints(UUpdatedReduced, IRowsNewReduced, bTraceIds, activity_matrix)
 
     var result = Array.empty[(String, String, Double)]
 
     if (branchingPolicy == null || branchingPolicy.isEmpty)
       completeSingleConstraints.foreach{ x =>
-        val support = Set(x.traces).size.toDouble / traceIds.size
+        val support = Set(x.traces).size.toDouble / bTraceIds.value.size
         if (support > supportThreshold) {
           result = result :+ (x.rule, x.eventA + "|" + x.eventB, support)
         }
       }
     else {
       val dummyImplicit: Dataset[PairConstraint] = spark.createDataset(completeSingleConstraints.map(x => PairConstraint(x.rule, x.eventA, x.eventB, x.traces)))
-      result = BranchedDeclare.extractBranchedPairConstraints(dummyImplicit, totalTraces = traceIds.size, support = supportThreshold,
+      result = BranchedDeclare.extractBranchedPairConstraints(dummyImplicit, totalTraces = bTraceIds.value.size, support = supportThreshold,
         policy = branchingPolicy, branchingType = branchingType, branchingBound = branchingBound,
         dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
     }
@@ -307,7 +307,7 @@ object DeclareMining {
 
   def extractAllUnorderedConstraints( merge_u: Dataset[(String, Set[String])],
                                       merge_i: Dataset[(String, String, Set[String])],
-                                      traceIds: Set[String],
+                                      bTraceIds: Broadcast[Set[String]],
                                       activity_matrix: RDD[(String, String)]): Array[UnorderedConstraint] = {
 
     activity_matrix
@@ -329,12 +329,12 @@ object DeclareMining {
         u.copy(pairs = pairOpt.map(_._3).getOrElse(Set.empty))
       }
       .distinct()
-      .flatMap(x => parseUnorderedConstraints(x, traceIds))
+      .flatMap(x => parseUnorderedConstraints(x, bTraceIds))
       .collect()
   }
 
 
-  private def parseUnorderedConstraints(u: UnorderedHelper, traceIds: Set[String]): TraversableOnce[UnorderedConstraint] = {
+  private def parseUnorderedConstraints(u: UnorderedHelper, bTraceIds: Broadcast[Set[String]]): TraversableOnce[UnorderedConstraint] = {
     val l = ListBuffer[UnorderedConstraint]()
 
     val uaSet = u.ua
@@ -352,10 +352,10 @@ object DeclareMining {
       val coExistence = uaSet.intersect(ubSet)
       l += UnorderedConstraint("co-existence", u.eventA, u.eventB, coExistence.toArray)
 
-      val exclusiveChoice = traceIds.diff(coExistence)
+      val exclusiveChoice = bTraceIds.value.diff(coExistence)
       l += UnorderedConstraint("exclusive choice", u.eventA, u.eventB, exclusiveChoice.toArray)
 
-      val notCoExistence = traceIds.diff(pairsSet)
+      val notCoExistence = bTraceIds.value.diff(pairsSet)
       l += UnorderedConstraint("not co-existence", u.eventA, u.eventB, notCoExistence.toArray)
     }
     l.toList
@@ -363,7 +363,7 @@ object DeclareMining {
 
   def extractOrdered(logName: String, affectedEvents: Dataset[Event],
                      bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
-                     bEventTypeOccurrencesMap: Broadcast[scala.collection.Map[String, Long]],
+                     bTraceIds: Broadcast[Set[String]],
                      activityMatrix: RDD[(String, String)],
                      totalTraces: Long,
                      support: Double,
@@ -476,9 +476,9 @@ object DeclareMining {
     //compute constraints using support and collect them
     val constraints = if (policy == null || policy.isEmpty)
       this.extractAllOrderedConstraints (pairConstraints,
-                                        bEventTypeOccurrencesMap,
-                                        activityMatrix,
-                                        support)
+                                         bTraceIds,
+                                         activityMatrix,
+                                         support)
     else
       BranchedDeclare.extractBranchedPairConstraints (pairConstraints,
                                                     totalTraces,
@@ -494,7 +494,7 @@ object DeclareMining {
   }
 
   def extractAllOrderedConstraints(constraints: Dataset[PairConstraint],
-                                   bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
+                                   bTraceIds: Broadcast[Set[String]],
                                    activity_matrix: RDD[(String, String)],
                                    support: Double): Array[(String, String, Double)] = {
 
@@ -517,9 +517,9 @@ object DeclareMining {
     val remaining = constraints.rdd.flatMap(c => {
         val l = ListBuffer[(String, String, Double)]()
         val sup = if (c.rule.contains("response")) {
-          Set(c.traces).size.toDouble / bUnique_traces_to_event_types.value(c.eventA)
+          Set(c.traces).size.toDouble / bTraceIds.value.size
         } else {
-          Set(c.traces).size.toDouble  / bUnique_traces_to_event_types.value(c.eventB)
+          Set(c.traces).size.toDouble  / bTraceIds.value.size
         }
 
         l += ((c.rule, c.eventA + "|" + c.eventB, sup))
@@ -573,51 +573,51 @@ object DeclareMining {
   }
 
 
-  def extractAllExistenceConstraints (existences: Dataset[ExactlyConstraint],
-                                      support: Double,
-                                      total_traces: Long): Array[(String, String, Double)]  = {
-    existences
-      .rdd
-      .groupBy(_.eventType)
-      .flatMap { case (event_type, activities) =>
-        val l = ListBuffer[PairConstraintSupported]()
-
-        val sortedActivities = activities.toList.sortBy(_.instances)
-        var cumulativeAbsence = total_traces - activities.map(_.traces.length).sum
-        var cumulativeExistence = total_traces - activities.map(_.traces.length).sum
-
-        sortedActivities.foreach { activity =>
-
-          //Exactly constraint
-          if ((activity.traces.length.toDouble / total_traces) >= support) {
-            l += PairConstraintSupported("exactly",
-                                          event_type,
-                                          activity.instances.toString,
-                                          activity.traces.length.toDouble / total_traces)
-          }
-          //Existence constraint
-          val s = (total_traces - cumulativeExistence).toDouble / total_traces
-          if (s >= support) {
-            l += PairConstraintSupported("existence",
-                                          event_type,
-                                          activity.instances.toString,
-                                          s)
-          }
-          cumulativeExistence += activity.traces.length
-
-
-          val as = cumulativeAbsence.toDouble / total_traces
-          if (as >= support) {
-            l += PairConstraintSupported("absence", event_type, activity.instances.toString, as)
-          }
-          cumulativeAbsence += activity.traces.length
-
-        }
-
-        l += PairConstraintSupported("absence", event_type, (sortedActivities.last.instances + 1).toString, 1)
-        l.toList
-      }.collect()
-  }
+//  def extractAllExistenceConstraints (existences: Dataset[ExactlyConstraint],
+//                                      support: Double,
+//                                      total_traces: Long): Array[(String, String, Double)]  = {
+//    existences
+//      .rdd
+//      .groupBy(_.eventType)
+//      .flatMap { case (event_type, activities) =>
+//        val l = ListBuffer[PairConstraintSupported]()
+//
+//        val sortedActivities = activities.toList.sortBy(_.instances)
+//        var cumulativeAbsence = total_traces - activities.map(_.traces.length).sum
+//        var cumulativeExistence = total_traces - activities.map(_.traces.length).sum
+//
+//        sortedActivities.foreach { activity =>
+//
+//          //Exactly constraint
+//          if ((activity.traces.length.toDouble / total_traces) >= support) {
+//            l += PairConstraintSupported("exactly",
+//                                          event_type,
+//                                          activity.instances.toString,
+//                                          activity.traces.length.toDouble / total_traces)
+//          }
+//          //Existence constraint
+//          val s = (total_traces - cumulativeExistence).toDouble / total_traces
+//          if (s >= support) {
+//            l += PairConstraintSupported("existence",
+//                                          event_type,
+//                                          activity.instances.toString,
+//                                          s)
+//          }
+//          cumulativeExistence += activity.traces.length
+//
+//
+//          val as = cumulativeAbsence.toDouble / total_traces
+//          if (as >= support) {
+//            l += PairConstraintSupported("absence", event_type, activity.instances.toString, as)
+//          }
+//          cumulativeAbsence += activity.traces.length
+//
+//        }
+//
+//        l += PairConstraintSupported("absence", event_type, (sortedActivities.last.instances + 1).toString, 1)
+//        l.toList
+//      }.collect()
+//  }
 
 
 
