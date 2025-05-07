@@ -101,6 +101,8 @@ object Main {
             .toMap
           val bEventTypeOccurrencesMap = spark.sparkContext.broadcast(eventTypeOccurrencesMap)
 
+          val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
+
           /** Retain separately only the newly arrived events */
           val prevMiningTs = metaData.last_declare_mined
           val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || hardRediscover) events
@@ -152,7 +154,6 @@ object Main {
           val existence = DeclareMining.extractExistenceConstraints(
             logName = metaData.log_name,
             affectedEvents = affectedEvents,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
             supportThreshold = support,
             totalTraces = metaData.traces,
             branchingPolicy = branchingPolicy,
@@ -161,9 +162,19 @@ object Main {
             dropFactor = dropFactor,
             filterUnderBound = filterUnderBound)
 
-          //extract unordered
-          //      val unordered_constraints = DeclareMining.extractUnordered(logname = metaData.log_name, affectedEvents,
-          //        bEvolvedTracesBounds, activity_matrix, support, metaData.traces, branchingPolicy)
+          /** Unordered patterns */
+          val unorder = DeclareMining.extractUnordered(
+            logName = metaData.log_name,
+            affectedEvents = affectedEvents,
+            activity_matrix,
+            traceIds,
+            supportThreshold = support,
+            totalTraces = metaData.traces,
+            branchingPolicy = branchingPolicy,
+            branchingBound = branchingBound,
+            filterRare = filterRare,
+            dropFactor = dropFactor,
+            filterUnderBound = filterUnderBound))
 
           //extract order relations
 
@@ -198,7 +209,7 @@ object Main {
           //        val formattedDouble = f"${x.support}%.3f"
           //        l += s"${x.rule}|${x.source}|${x.target}|$formattedDouble\n"
           //      })
-          //      unordered_constraints.foreach(x => {
+          //      unorder.foreach(x => {
           //        val formattedDouble = f"${x.occurrences}%.3f"
           //        l += s"${x.rule}|${x.eventA}|${x.eventB}|$formattedDouble\n"
           //      })
@@ -226,7 +237,7 @@ object Main {
           activity_matrix.unpersist()
           affectedEvents.unpersist()
 
-          ordered.union(position).foreach(x => {
+          ordered.union(position).union(existence).foreach(x => {
             val formattedDouble = f"${x._3}%.7f"
             l += s"${x._1}|${x._2}|$formattedDouble\n"
           })

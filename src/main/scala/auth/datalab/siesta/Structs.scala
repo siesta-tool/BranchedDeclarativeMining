@@ -30,12 +30,14 @@ object Structs {
   case class ExactlyConstraint(rule: String, eventType:String, instances:Long, traces:Array[String])
   case class ExactlyConstraintRow(rule:String, eventType:String, instances:Long, trace:String)
 
-  case class ExistenceConstraint(rule:String, event_type:String, n: Int, traces:Array[String])
+//  case class ExistenceConstraint(rule:String, event_type:String, n: Int, traces:Array[String])
   case class PairConstraintRow(rule: String, eventA: String, eventB: String, trace: String)
   case class PairConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 
-
-  case class UnorderedHelper(eventA:String,eventB:String, ua:Long, ub:Long, pairs:Long,key:String)
+  case class URow(eventType:String, trace:String)
+  case class IRow(eventA:String, eventB:String, trace:String)
+  case class UnorderedHelper(eventA:String,eventB:String, ua:Set[String], ub:Set[String], pairs:Set[String],key:String)
+  case class UnorderedConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 
   case class PairConstraintSupported(rule:String, activation:String, target:String, support:Double) extends Serializable
   case class Constraint(rule:String, activation:String, target:String, support:Double) extends Serializable
