@@ -157,6 +157,7 @@ object Main {
             affectedEvents = affectedEvents,
             supportThreshold = support,
             totalTraces = metaData.traces,
+            bTraceIds = bTraceIds,
             branchingPolicy = branchingPolicy,
             branchingBound = branchingBound,
             filterRare = filterRare,

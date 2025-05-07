@@ -40,7 +40,7 @@ object Structs {
   case class UnorderedConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 
   case class PairConstraintSupported(rule:String, activation:String, target:String, support:Double) extends Serializable
-  case class Constraint(rule:String, activation:String, target:String, support:Double) extends Serializable
+
 
   // Target-branched constraint with a single source and multiple targets
   case class TargetBranchedPairConstraint(
