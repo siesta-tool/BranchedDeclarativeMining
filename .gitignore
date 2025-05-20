@@ -17,4 +17,5 @@ evaluation/venv/*
 
 out/
 output/
+!input/test.xes
 !evaluation/incremental_evaluation/results.txt
