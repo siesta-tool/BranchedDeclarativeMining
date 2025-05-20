@@ -7,8 +7,7 @@ LOG=$1
 SUP=$2
 POLICY=$3
 BOUND=$4
-SPARK_SUBMIT_COMMAND="/opt/spark/bin/spark-submit --master local[*] --driver-memory 50g --conf spark.eventLog.enabled=true --conf
-spark.eventLog.dir=/tmp/spark-events"
+SPARK_SUBMIT_COMMAND="/opt/spark/bin/spark-submit --master local[*] --driver-memory 50g --conf spark.eventLog.enabled=true --conf spark.eventLog.dir=/tmp/spark-events"
 EXTRACTION_JAR="/app/declare.jar"
 
 export s3accessKeyAws=minioadmin

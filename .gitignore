@@ -15,4 +15,6 @@ evaluation/venv/*
 *.jar
 *.xes
 
+out/
+output/
 !evaluation/incremental_evaluation/results.txt

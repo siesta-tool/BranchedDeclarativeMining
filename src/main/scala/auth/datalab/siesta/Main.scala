@@ -19,10 +19,10 @@ object Main {
     val parser = {
       import builder._
       OParser.sequence(
-        programName("SIESTA Declare Constraints Mining"),
-        head("SIESTA", "1.0"),
+        programName("SIESTA CBDeclare Constraints Mining"),
+        head("SIESTA CBD Module", "1.0"),
 
-        arg[String]("<logname>")
+        opt[String]('l', "logname")
           .required()
           .action((x, c) => c.copy(logName = x))
           .text("S3 logname is required"),
@@ -65,6 +65,7 @@ object Main {
       case Some(config) =>
         val s3Connector = new S3Connector()
         s3Connector.initialize(config.logName)
+        println(s"Log: ${config.logName}")
         println(s"Support: ${config.support}")
         println(s"Branching Policy: ${config.branchingPolicy}")
         println(s"Branching Type: ${config.branchingType}")
@@ -189,52 +190,7 @@ object Main {
           //        activity_matrix)
 
           val l = ListBuffer[String]()
-          //each negative pair wil have 100% support in the constraints not-coexist, exclusive-choice, not succession and not chain-succession
-          //      negative_pairs.foreach(x => {
-          //        //      l+=s"not-chain-succession|${x._1}|${x._2}|1.000\n"
-          //        l += s"not-succession|${x._1}|${x._2}|1.000\n"
-          //      })
-          //      negative_pairs.filter(x => x._1 < x._2).foreach(x => {
-          //        if (negative_pairs.contains((x._2, x._1))) {
-          //          l += s"not co-existence|${x._1}|${x._2}|1.000\n"
-          //          l += s"exclusive choice|${x._1}|${x._2}|1.000\n"
-          //        }
-          //
-          //      })
 
-
-          //      position_constraints.foreach(x => {
-          //        val formattedDouble = f"${x.support}%.3f"
-          //        l += s"${x.rule}|${x.source}|$formattedDouble\n"
-          //      })
-          //      existence_constraints.foreach(x => {
-          //        val formattedDouble = f"${x.support}%.3f"
-          //        l += s"${x.rule}|${x.source}|${x.target}|$formattedDouble\n"
-          //      })
-          //      unorder.foreach(x => {
-          //        val formattedDouble = f"${x.occurrences}%.3f"
-          //        l += s"${x.rule}|${x.eventA}|${x.eventB}|$formattedDouble\n"
-          //      })
-
-//          ordered_constraints match {
-//            case Right(x) => x match {
-//              case Left(x) => x.foreach(x => {
-//                val formattedDouble = f"${x.support}%.7f"
-//                l += s"${x.rule}|${x.source}|${x.targets.mkString("(", ", ", ")")}|$formattedDouble\n"
-//              })
-//              case Right(x) => x.foreach(x => {
-//                val formattedDouble = f"${x.support}%.7f"
-//                l += s"${x.rule}|${x.sources.mkString("(", ", ", ")")}|${x.target}|$formattedDouble\n"
-//              })
-//            }
-//            case Left(x) => x.foreach(x => {
-//              val formattedDouble = f"${x.support}%.7f"
-//              l += s"${x.rule}|${x.activation}|${x.target}|$formattedDouble\n"
-//            })
-//          }
-
-//          //TODO: change support/ total traces to broadcasted variables
-//
           events.unpersist()
           activity_matrix.unpersist()
           affectedEvents.unpersist()
@@ -244,7 +200,7 @@ object Main {
             l += s"${x._1}|${x._2}|$formattedDouble\n"
           })
           println("Constraints mined: " + l.size)
-          val file = "constraints_" + config.logName + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
+          val file = "output/constraints_" + config.logName + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
             config.branchingPolicy + ".txt"
           val writer = new BufferedWriter(new FileWriter(file))
           l.toList.foreach(writer.write)
