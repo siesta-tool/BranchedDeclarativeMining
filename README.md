@@ -34,12 +34,13 @@ This is achieved by building on top of SIESTA’s original incremental mining st
     "logname": "test"
   }'
 ```
-3. Configure the CBDeclare service by modifying the `command` section in the `docker-compose.yml` file:
-   - Replace `test` with the logname of your log file.
-   - Optionally, add any arguments as needed separated by commas. See the next section for all available arguments.
+3. Configure the CBDeclare service by modifying it in the `docker-compose.yml` file:
+   - Replace `test` in the `command` section with the logname of your log file.
+   - Optionally, add any arguments in the `command` section as needed separated by commas. See the next section for all available arguments.
+   - If your RAM is less than 10g, consider changing the `entrypoint` driver memory configuration as well.
    
    E.g. `command:["-l", "test", "--support", "0.5", "-p", "AND"]`
-4. Run the CBDeclare service:
+5. Run the CBDeclare service:
 ```bash
   docker compose up cbdeclare
 ```
