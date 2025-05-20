@@ -1,8 +1,22 @@
-# SIESTA Incremental Constraints Mining Module
+# Comprehensive Branched Declare Constraints Mining extension module  
 
-This project implements an intermediate extension of SIESTA: a Scalable Infrastructure for Sequential Pattern Analysis. It utilizes the indices built by the Preprocess Component to efficiently respond to Declare constraints queries. It serves as an alternative to SIESTA's Query Executor (QP) for constraint mining, enabling incremental extraction with better performance in terms of time.
+## Overview
 
-The main difference from the QP method is that Incremental Mining preserves intermediate constraints states after a new log batch file is indexed. Therefore, multiple queries to this module, when no new data has been added, require constant time to get a response.
+This branch contains an extension module for the SIESTA framework, designed to extend the incremental mining procedure of Declare constraints. The module introduces support for branching mechanisms on both source and target events within the constraint discovery process.
+
+## Purpose
+
+The primary objective of this module is to enhance the standard Declare constraints mining by enabling branched relationships:
+- Source Branching: Allowing multiple source events to jointly activate a constraint.
+- Target Branching: Allowing multiple target events to be linked under a single activation event.
+
+This is achieved by building on top of SIESTA’s original incremental mining strategy, maintaining scalability while supporting more expressive process models.
+
+## Features
+
+- Implementation of AND, OR, and XOR branching policies for both sources and targets.
+- Compatible with batch event log processing.
+- Optimized to maintain the efficiency of the incremental mining procedure, suitable for big data scenarios.
 
 ## Run with Docker Compose (v2+)
 1. From `docker-compose.yml`, run the following S3 service:
