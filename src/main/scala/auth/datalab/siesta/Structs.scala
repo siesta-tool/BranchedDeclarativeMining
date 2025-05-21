@@ -30,7 +30,6 @@ object Structs {
   case class ExactlyConstraint(rule: String, eventType:String, instances:Long, traces:Array[String])
   case class ExactlyConstraintRow(rule:String, eventType:String, instances:Long, trace:String)
 
-//  case class ExistenceConstraint(rule:String, event_type:String, n: Int, traces:Array[String])
   case class PairConstraintRow(rule: String, eventA: String, eventB: String, trace: String)
   case class PairConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 

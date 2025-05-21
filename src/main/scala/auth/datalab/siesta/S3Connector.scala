@@ -41,7 +41,7 @@ class S3Connector {
 
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     spark.conf.set("spark.sql.parquet.filterPushdown", "true")
-//    spark.sparkContext.setLogLevel("WARN")
+    spark.sparkContext.setLogLevel("WARN")
 
     seq_table = s"""s3a://siesta/${logname}/seq.parquet/"""
     detailed_table = s"""s3a://siesta/${logname}/detailed.parquet/"""
