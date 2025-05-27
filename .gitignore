@@ -10,6 +10,7 @@ project/project*
 
 *.iml
 evaluation/venv/*
+evaluation/bpm2025/*
 *.withTimestamp
 *.txt
 *.jar
