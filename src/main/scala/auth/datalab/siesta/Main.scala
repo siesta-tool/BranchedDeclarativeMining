@@ -76,7 +76,7 @@ object Main {
         println(s"Find all constraints from beginning: ${config.hardRediscovery}")
 
         val support = config.support
-        val branchingPolicy = config.branchingPolicy
+        var branchingPolicy = config.branchingPolicy
         val branchingType = config.branchingType
         val branchingBound = config.branchingBound
         val filterRare = config.filterRare
@@ -200,8 +200,10 @@ object Main {
             l += s"${x._1}|${x._2}|$formattedDouble\n"
           })
           println("Constraints mined: " + l.size)
-          val file = "output/constraints_" + config.logName + "_s" + config.support.toString + "_b" + config.branchingBound + "_" +
-            config.branchingPolicy + ".txt"
+
+          branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
+
+          val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
           val writer = new BufferedWriter(new FileWriter(file))
           l.toList.foreach(writer.write)
           writer.close()
