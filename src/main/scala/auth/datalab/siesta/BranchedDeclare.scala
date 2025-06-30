@@ -61,7 +61,7 @@ object BranchedDeclare {
                                      branchingBound: Int = 2,
                                      dropFactor: Double = 2.5,
                                      filterUnderBound: Boolean = false,
-                                     filterRare: Boolean = false): Array[(String, String, Double)] = {
+                                     filterRare: Boolean = false): Array[(String, String, Array[String])] = {
     if (branchingType == "TARGET")
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
         filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
@@ -81,7 +81,7 @@ object BranchedDeclare {
                                            dropFactor: Double = 2.5,
                                            filterBounded: Boolean = false,
                                            filterRare: Boolean = false,
-                                           printNum: Boolean = false): Array[(String, String, Double)] = {
+                                           printNum: Boolean = false): Array[(String, String, Array[String])] = {
       val spark = SparkSession.builder().getOrCreate()
       import spark.implicits._
 
@@ -129,20 +129,20 @@ object BranchedDeclare {
           val targetTraces = targetResult.flatMap(_._2) // Extract associated trace sets
 
           // Calculate the total number of unique traces for the targets
-          val totalUniqueTraces = targetTraces.distinct.size.toDouble
+//          val totalUniqueTraces = targetTraces.distinct.size.toDouble
 
           // Create a TargetBranchedConstraint for the rule and its source event
-          TargetBranchedPairConstraint(rule, activationEvent, targetEvents.toArray, totalUniqueTraces / totalTraces)
-        }.filter(_.support > threshold)
+          TargetBranchedPairConstraint(rule, activationEvent, targetEvents.toArray, targetTraces.distinct.toArray)
+        }.filter(_.traces.length > threshold)
 
     if (printNum)
-      println(s"$policy # = " + groupedConstraints.filter(_.support > threshold).count())
+      println(s"$policy # = " + groupedConstraints.filter(_.traces.length > threshold).count())
 
     var result = groupedConstraints
     if (filterBounded)
       result = groupedConstraints.filter(_.targets.length == branchingBound)
 
-    result.map(x => (x.rule, x.source + "|" + x.targets.mkString(","), x.support)).collect()
+    result.map(x => (x.rule, x.source + "|" + x.targets.mkString(","), x.traces)).collect()
   }
 
   private def getSourceBranchedConstraints(constraints: Dataset[PairConstraint],
@@ -153,7 +153,7 @@ object BranchedDeclare {
                                            dropFactor: Double = 2.5,
                                            filterBounded: Boolean = false,
                                            filterRare: Boolean = false,
-                                           printNum: Boolean = false): Array[(String, String, Double)] = {
+                                           printNum: Boolean = false): Array[(String, String, Array[String])] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -199,24 +199,24 @@ object BranchedDeclare {
         val sourceTraces = sourceResult.flatMap(_._2) // Extract associated trace sets
 
         // Calculate the total number of unique traces for the sources
-        val totalUniqueTraces = sourceTraces.distinct.size.toDouble
+//        val totalUniqueTraces = sourceTraces.distinct.size.toDouble
 
         // Create a SourceBranchedConstraint for the rule and its target event
         SourceBranchedPairConstraint(
           rule = rule,
           sources = sourceEvents.toArray,
           target = targetEvent,
-          support = totalUniqueTraces / totalTraces
+          traces = sourceTraces.distinct.toArray
         )
-      }.filter(_.support > threshold)
+      }.filter(_.traces.length > threshold)
 
     if (printNum)
-      println(s"$policy # = " + groupedConstraints.filter(_.support >= threshold).count())
+      println(s"$policy # = " + groupedConstraints.filter(_.traces.length >= threshold).count())
 
     var result = groupedConstraints
     if (filterBounded)
       result = result.filter(_.sources.length == branchingBound)
-    result.map(x=> (x.rule, x.sources.mkString(",") + "|" + x.target, x.support)).collect()
+    result.map(x=> (x.rule, x.sources.mkString(",") + "|" + x.target, x.traces)).collect()
   }
 
   //////////////////////////////////////////////////////////////////////

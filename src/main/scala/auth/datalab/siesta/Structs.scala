@@ -46,7 +46,7 @@ object Structs {
                                        rule: String,
                                        source: String,
                                        targets: Array[String],
-                                       support: Double
+                                       traces: Array[String]
                                      ) extends Serializable
 
   // Source-branched constraint with multiple sources and a single target
@@ -54,6 +54,6 @@ object Structs {
                                        rule: String,
                                        sources: Array[String],
                                        target: String,
-                                       support: Double
+                                       traces: Array[String]
                                      ) extends Serializable
 }

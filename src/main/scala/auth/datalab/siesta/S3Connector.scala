@@ -100,5 +100,12 @@ class S3Connector {
       }).toDS()
   }
 
+  def get_single_table(): Dataset[(String, String)] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    spark.read.parquet(this.single_table)
+      .map(x => (x.getAs[String]("event_type"), x.getAs("trace_id")))
+  }
+
 
 }

@@ -91,6 +91,7 @@ object Main {
           /** Extract all preprocessed events of the log from S3 */
           val events: Dataset[Event] = s3Connector.get_events_sequence_table()
           events.persist(StorageLevel.MEMORY_AND_DISK)
+          println(s"Total events: ${events.count()}")
 
           /** Create a map event_type -> #total occurrences in log */
           val eventTypeOccurrencesMap: scala.collection.Map[String, Long] = events
@@ -104,6 +105,7 @@ object Main {
 
           val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
           val bTraceIds = spark.sparkContext.broadcast(traceIds)
+          println(s"Total traces: ${traceIds.size}")
 
           /** Retain separately only the newly arrived events */
           val prevMiningTs = metaData.last_declare_mined
@@ -132,9 +134,9 @@ object Main {
 
           // TODO: evaluate if we need this
           // All possible event_type pairs matrix
-          val activity_matrix: RDD[(String, String)] = Utilities.get_activity_matrix(bEventTypeOccurrencesMap.value)
-          activity_matrix.persist(StorageLevel.MEMORY_AND_DISK)
-
+          val allEventOccurrences = s3Connector.get_single_table().rdd.groupBy(_._1).map(x =>(x._1, x._2.map(_._2).toSet))
+          val activityMatrix = allEventOccurrences.cartesian(allEventOccurrences)
+          activityMatrix.persist(StorageLevel.MEMORY_AND_DISK)
 
           /**
            * Position patterns
@@ -171,7 +173,8 @@ object Main {
             bEvolvedTracesBounds = bEvolvedTracesBounds,
             affectedEvents = affectedEvents,
             bTraceIds = bTraceIds,
-            activity_matrix = activity_matrix,
+            activityMatrix = activityMatrix,
+            allEventOccurrences = allEventOccurrences,
             supportThreshold = support,
             branchingPolicy = branchingPolicy,
             branchingBound = branchingBound,
@@ -181,9 +184,9 @@ object Main {
             filterUnderBound = filterUnderBound)
 
           //extract order relations
-          val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
-            bTraceIds, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
-            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
+//          val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
+//            bTraceIds, activity_matrix, metaData.traces, support, branchingPolicy, branchingType,
+//            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
           //handle negative pairs = pairs that does not appear not even once in the data
           //      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
@@ -192,12 +195,12 @@ object Main {
           val l = ListBuffer[String]()
 
           events.unpersist()
-          activity_matrix.unpersist()
+          activityMatrix.unpersist()
           affectedEvents.unpersist()
 
-          ordered.union(position).union(existence).union(unorder).foreach(x => {
-            val formattedDouble = f"${x._3}%.7f"
-            l += s"${x._1}|${x._2}|$formattedDouble\n"
+          unorder/*ordered.union(position).union(existence).union(unorder)*/.foreach(x => {
+//            val formattedDouble = f"${x._3}%.7f"
+            l += s"${x._1}|${x._2}|${x._3.mkString(",")}\n"
           })
           println("Constraints mined: " + l.size)
 
@@ -205,7 +208,7 @@ object Main {
 
           val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
           val writer = new BufferedWriter(new FileWriter(file))
-          l.toList.foreach(writer.write)
+          l.toList.sorted.foreach(writer.write)
           writer.close()
 
           if (!newEvents.isEmpty) {
