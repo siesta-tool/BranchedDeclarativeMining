@@ -47,7 +47,8 @@ object declare_mining {
           if (bPrevMining.value == "") {
             true
           } else {
-            // the events that//    new_events.show() we need to keep are after the previous timestamp
+            // the events that we need to keep are after the previous timestamp
+//            true
             Timestamp.valueOf(bPrevMining.value).before(Timestamp.valueOf(a.ts))
           }
         })
