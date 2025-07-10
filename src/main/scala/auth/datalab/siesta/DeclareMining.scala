@@ -4,7 +4,7 @@ import auth.datalab.siesta.Structs._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.{col, collect_list, concat_ws, count, lit, sum}
-import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
+import org.apache.spark.sql.{Dataset, Encoders, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
 
 import scala.collection.mutable.ListBuffer
@@ -339,33 +339,189 @@ object DeclareMining {
     }
   }
 
-//  def extractOrdered(logName: String, affectedEvents: Dataset[Event],
-//                     bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
-//                     bTraceIds: Broadcast[Set[String]],
-//                     activityMatrix: RDD[(String, String)],
-//                     totalTraces: Long,
-//                     support: Double,
-//                     policy: String,
-//                     branchingType: String,
-//                     branchingBound: Int,
-//                     dropFactor: Double,
-//                     filterRare: Boolean,
-//                     filterBounded: Boolean,
-//                     hardRediscover: Boolean
-//                     ): Array[(String, String, Double)] = {
+  def extractOrdered(logName: String, affectedEvents: Dataset[Event],
+                     bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
+                     bTraceIds: Broadcast[Set[String]],
+                     activityMatrix: RDD[((String, Set[String]),(String, Set[String]))],
+                     totalTraces: Long,
+                     supportThreshold: Double,
+                     branchingPolicy: String,
+                     branchingType: String,
+                     branchingBound: Int,
+                     dropFactor: Double,
+                     filterRare: Boolean,
+                     filterBounded: Boolean,
+                     hardRediscover: Boolean
+                     ): Array[(String, String, Array[String])] = {
+
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    // get previous data if exist
+    val orderPath = s"""s3a://siesta/$logName/declare/order.parquet/"""
+
+    val oldConstraints = if (!hardRediscover) try {
+      spark.read.parquet(orderPath).as[PairConstraintRow]
+    } catch {
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
+    } else spark.emptyDataset[PairConstraintRow]
+
+    // new traces
+    val newTraces = bEvolvedTracesBounds.value.filter(_._2._1 == 0).keySet
+
+    val newConstraints: Dataset[PairConstraintRow] = affectedEvents.rdd
+      .groupBy(_.trace)
+      .filter(x => newTraces.contains(x._1))
+      .flatMap { case (traceId, events) =>
+        val orderedEvents = events.toSeq.sortBy(_.pos)
+
+        val response: Seq[PairConstraintRow] =
+          (for {
+            (e1, i) <- orderedEvents.zipWithIndex
+            j <- (i + 1) until orderedEvents.length
+          } yield PairConstraintRow("response", e1.eventType, orderedEvents(j).eventType, traceId)).distinct
+
+        val precedence: Seq[PairConstraintRow] =
+          response.flatMap {
+            case PairConstraintRow(_, eventA, eventB, traceId) =>
+              var aSeen = false
+              var isValid = true
+
+              for (e <- orderedEvents if isValid) {
+                if (e.eventType == eventA) {
+                  aSeen = true
+                }
+                if (e.eventType == eventB && !aSeen) {
+                  isValid = false  // A `B` occurred before any `A`
+                }
+              }
+
+              if (isValid) Some(PairConstraintRow("precedence", eventA, eventB, traceId))
+              else None
+          }
+
+
+        val succession: Seq[PairConstraintRow] =
+          ((response.map(r => (r.eventA,r.eventB,r.trace)).toSet intersect precedence.map(p => (p.eventA,p.eventB,p.trace)).toSet)
+          .map { case (eventA, eventB, trace) => PairConstraintRow("succession", eventA, eventB, trace) }).toSeq
+
+        val alternateResponse: Seq[PairConstraintRow] =
+          response.flatMap {
+            case PairConstraintRow(_, eventA, eventB, traceId) =>
+              var aOpen = false  // whether an A is waiting for a B
+              var isSatisfied = true
+
+              for (e <- orderedEvents if isSatisfied && (e.eventType == eventA || e.eventType == eventB)) {
+                e.eventType match {
+                  case `eventA` =>
+                    if (aOpen) isSatisfied = false // Previous A didn't get a B before this A
+                    else aOpen = true // Start waiting for a B
+                  case `eventB` =>
+                    if (aOpen) aOpen = false       // B satisfied the last A
+                  // else ignore this B (not between two As)
+                }
+              }
+
+              // After loop, if any A is still open, it's a violation
+              if (isSatisfied && !aOpen) Some(PairConstraintRow("alternate-response", eventA, eventB, traceId))
+              else None
+          }
+
+        val alternatePrecedence: Seq[PairConstraintRow] =
+          precedence.flatMap {
+            case PairConstraintRow(_, eventA, eventB, traceId) =>
+              var aSeen = false  // waiting for a B to close the A
+              var isSatisfied = true
+
+              for (e <- orderedEvents if isSatisfied && (e.eventType == eventA || e.eventType == eventB)) {
+                e.eventType match {
+                  case `eventA` =>
+                    aSeen = true      // an A opens a precedence "slot" waiting for a B
+                  case `eventB` =>
+                    if (aSeen) aSeen = false  // B closes the open A slot
+                    else isSatisfied = false  // B occurred without preceding A
+                }
+              }
+
+              if (isSatisfied) Some(PairConstraintRow("alternate-precedence", eventA, eventB, traceId))
+              else None
+          }
+
+        val alternateSuccession: Seq[PairConstraintRow] =
+          (alternateResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect alternatePrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
+            .map { case (eventA, eventB, trace) => PairConstraintRow("alternate-succession", eventA, eventB, trace) }.toSeq
+
+        val chainResponse: Seq[PairConstraintRow] =
+          alternateResponse.flatMap {
+            case PairConstraintRow(_, eventA, eventB, traceId) =>
+              var isSatisfied = true
+
+              for ((e,i) <- orderedEvents.zipWithIndex if isSatisfied && e.eventType == eventA) {
+                if (i + 1 > orderedEvents.length || orderedEvents(i + 1).eventType != eventB)
+                  isSatisfied = false // If the next event is not B, it's a violation
+              }
+
+              // After loop, if there was a B not next to an A, it's a violation
+              if (isSatisfied) Some(PairConstraintRow("chain-response", eventA, eventB, traceId))
+              else None
+          }
+
+        val chainPrecedence: Seq[PairConstraintRow] =
+          alternatePrecedence.flatMap {
+            case PairConstraintRow(_, eventA, eventB, traceId) =>
+              var isSatisfied = true
+
+              for ((e,i) <- orderedEvents.zipWithIndex if isSatisfied && e.eventType == eventB) {
+                if (i - 1 < 0 || orderedEvents(i - 1).eventType != eventA)
+                  isSatisfied = false // If the previous event is not A, it's a violation
+              }
+
+              // After loop, if there was a A not previous to a B, it's a violation
+              if (isSatisfied) Some(PairConstraintRow("chain-precedence", eventA, eventB, traceId))
+              else None
+          }
+
+        val chainSuccession: Seq[PairConstraintRow] =
+          (chainResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect chainPrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
+            .map { case (eventA, eventB, trace) => PairConstraintRow("chain-succession", eventA, eventB, trace) }.toSeq
+
+
+        response ++ precedence ++ succession ++
+          alternateResponse ++ alternatePrecedence ++ alternateSuccession ++
+          chainResponse ++ chainPrecedence ++ chainSuccession
+      }
+      .toDS()
+
+//    val evolvedTraces = bEvolvedTracesBounds.value.filter(_._2._1 > 0).keySet
 //
-//    val spark = SparkSession.builder().getOrCreate()
-//    import spark.implicits._
-//    // get previous data if exist
-//    val orderPath = s"""s3a://siesta/$logName/declare/order.parquet/"""
+//        val updateConstraints = {
+//      // keep the old constraints that are affected by the new events
+//      oldConstraints.rdd.groupBy(_.trace).filter(x => evovledTraces.contains(x._1)).foreach{
+//        constraint => {
+//        // response
 //
-//    val oldConstraints = if (!hardRediscover) try {
-//      spark.read.parquet(orderPath).as[PairConstraintRow]
-//    } catch {
-//      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
-//    } else spark.emptyDataset[PairConstraintRow]
-//
-//    val newConstraints = affectedEvents.rdd
+//        }
+//      }
+//    }
+
+//    if (branchingPolicy == null || branchingPolicy.isEmpty) {
+      var result = ListBuffer.empty[(String, String, Array[String])]
+      newConstraints
+        .groupBy("rule", "eventA", "eventB")
+        .agg(collect_list($"trace").as("traces"))
+        .as[PairConstraint]
+        .collect().foreach { x =>
+        val support = x.traces.toSet.size.toDouble / bTraceIds.value.size
+        if (support > supportThreshold) {
+          result += ((x.rule, x.eventA + "|" + x.eventB, x.traces.distinct))
+        }
+      }
+      result.toArray
+//    }
+
+
+
+
+    //    val newConstraints = affectedEvents.rdd
 //      .groupBy(_.trace)
 //      .flatMap{ case (traceId, events) =>
 //        // gets first and last position of the new events of the current trace
@@ -469,7 +625,7 @@ object DeclareMining {
 //                                                    filterUnderBound = filterBounded)
 //    pairConstraints.unpersist()
 //    constraints
-//  }
+  }
 
   def extractAllOrderedConstraints(constraints: Dataset[PairConstraint],
                                    bTraceIds: Broadcast[Set[String]],
