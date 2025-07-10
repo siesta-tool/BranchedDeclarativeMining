@@ -141,66 +141,62 @@ object Main {
           /**
            * Position patterns
            */
-//          val position = DeclareMining.extractPositionConstraints(
-//            logName = metaData.log_name,
-//            affectedEvents = affectedEvents,
-//            bEvolvedTracesBounds = bEvolvedTracesBounds,
-//            supportThreshold = support,
-//            totalTraces = metaData.traces,
-//            branchingPolicy = branchingPolicy,
-//            branchingBound = branchingBound,
-//            filterRare = filterRare,
-//            dropFactor = dropFactor,
-//            filterUnderBound = filterUnderBound,
-//            hardRediscover = hardRediscover)
-//
-//          /** Existence patterns */
-//          val existence = DeclareMining.extractExistenceConstraints(
-//            logName = metaData.log_name,
-//            affectedEvents = affectedEvents,
-//            supportThreshold = support,
-//            totalTraces = metaData.traces,
-//            bTraceIds = bTraceIds,
-//            branchingPolicy = branchingPolicy,
-//            branchingBound = branchingBound,
-//            filterRare = filterRare,
-//            dropFactor = dropFactor,
-//            filterUnderBound = filterUnderBound)
-//
-//          /** Unordered patterns */
-//          val unorder = DeclareMining.extractUnordered(
-//            logName = metaData.log_name,
-//            bEvolvedTracesBounds = bEvolvedTracesBounds,
-//            affectedEvents = affectedEvents,
-//            bTraceIds = bTraceIds,
-//            activityMatrix = activityMatrix,
-//            allEventOccurrences = allEventOccurrences,
-//            supportThreshold = support,
-//            branchingPolicy = branchingPolicy,
-//            branchingBound = branchingBound,
-//            branchingType = branchingType,
-//            filterRare = filterRare,
-//            dropFactor = dropFactor,
-//            filterUnderBound = filterUnderBound)
+          val position = DeclareMining.extractPositionConstraints(
+            logName = metaData.log_name,
+            affectedEvents = affectedEvents,
+            bEvolvedTracesBounds = bEvolvedTracesBounds,
+            supportThreshold = support,
+            totalTraces = metaData.traces,
+            branchingPolicy = branchingPolicy,
+            branchingBound = branchingBound,
+            filterRare = filterRare,
+            dropFactor = dropFactor,
+            filterUnderBound = filterUnderBound,
+            hardRediscover = hardRediscover)
 
-          //extract order relations
+          /** Existence patterns */
+          val existence = DeclareMining.extractExistenceConstraints(
+            logName = metaData.log_name,
+            affectedEvents = affectedEvents,
+            supportThreshold = support,
+            totalTraces = metaData.traces,
+            bTraceIds = bTraceIds,
+            branchingPolicy = branchingPolicy,
+            branchingBound = branchingBound,
+            filterRare = filterRare,
+            dropFactor = dropFactor,
+            filterUnderBound = filterUnderBound)
+
+          /** Unordered patterns */
+          val unorder = DeclareMining.extractUnordered(
+            logName = metaData.log_name,
+            bEvolvedTracesBounds = bEvolvedTracesBounds,
+            affectedEvents = affectedEvents,
+            bTraceIds = bTraceIds,
+            activityMatrix = activityMatrix,
+            allEventOccurrences = allEventOccurrences,
+            supportThreshold = support,
+            branchingPolicy = branchingPolicy,
+            branchingBound = branchingBound,
+            branchingType = branchingType,
+            filterRare = filterRare,
+            dropFactor = dropFactor,
+            filterUnderBound = filterUnderBound)
+
+          /** Ordered patterns */
           val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
             bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
             branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
-          //handle negative pairs = pairs that does not appear not even once in the data
-          //      val negative_pairs: Array[(String, String)] = DeclareMining.handle_negatives(metaData.log_name,
-          //        activity_matrix)
 
           val l = ListBuffer[String]()
-
           events.unpersist()
           activityMatrix.unpersist()
           affectedEvents.unpersist()
 
-          ordered/*.union(position).union(existence).union(unorder)*/.foreach(x => {
-//            val formattedDouble = f"${x._3}%.7f"
-            l += s"${x._1}|${x._2}|${x._3.mkString(",")}\n"
+          ordered.union(position).union(existence).union(unorder).foreach(x => {
+            val support = f"${x._3.length.toDouble / traceIds.size}%.3f"
+            l += s"${x._1}|${x._2}|${x._3.mkString(",")}|$support\n"
           })
           println("Constraints mined: " + l.size)
 
