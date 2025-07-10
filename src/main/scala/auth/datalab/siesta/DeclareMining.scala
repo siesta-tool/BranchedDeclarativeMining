@@ -426,6 +426,7 @@ object DeclareMining {
               else None
           }
 
+
         val alternatePrecedence: Seq[PairConstraintRow] =
           precedence.flatMap {
             case PairConstraintRow(_, eventA, eventB, traceId) =>
