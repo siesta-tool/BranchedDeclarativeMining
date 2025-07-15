@@ -109,9 +109,9 @@ object extract_unordered {
         val events_seq = events.toSeq.toList
         val positions = bChangedTraces.value.getOrElse(trace_id, (0, events.size - 1))
         val new_event_types: Set[String] = events_seq.filter(x => x.pos >= positions._1).map(_.event_type)
-          .distinct.sorted.toSet
+          .distinct.toSet
         val prev_event_types: Set[String] = events_seq.filter(x => x.pos < positions._1).map(_.event_type)
-          .distinct.sorted.toSet
+          .distinct.toSet
 
         val unseen_et: Set[String] = all_event_types
           .filter(et => !prev_event_types.contains(et) && !new_event_types.contains(et))
@@ -128,7 +128,7 @@ object extract_unordered {
               }).toSeq
           })
 
-        val co_existence = new_event_types.flatMap(x1 => {
+        val co_existence = new_event_types.diff(prev_event_types).flatMap(x1 => {
           (new_event_types ++ prev_event_types).filter(x2 => x2 != x1)
             .map(x2 => {
               if (x1 < x2) {
@@ -205,8 +205,8 @@ object extract_unordered {
 
     //      append co-existence records
     val co_existence_records = ex_choices_to_co_existence
-      .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF())
       .select("trace_id","ev_a","ev_b")
+      .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF().select("trace_id","ev_a","ev_b"))
       .as[CoExistenceRecord]
       .toDF()
 
