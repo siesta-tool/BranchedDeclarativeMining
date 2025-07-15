@@ -102,6 +102,27 @@ object extract_unordered {
                                            complete_traces_that_changed: Dataset[Event]): Unit = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
+    //    define table names
+    val ex_choice_table = s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
+    val co_existence_table = s"""s3a://siesta/${metaData.log_name}/coExistenceTable.parquet/"""
+    
+    // identify event types that did not exist in the previous batches (only if exist previous batches)
+    val unseen_event_types_till_now=
+      try {
+        val existing_event_types = spark.read.parquet(ex_choice_table)
+          .select("ev_a", "ev_b")
+          .distinct()
+          .collect()
+          .flatMap(x => {
+            Seq(x.getString(0), x.getString(1))
+          })
+          .toSet
+        all_event_types.diff(existing_event_types)
+      }catch {
+        case _:org.apache.spark.sql.AnalysisException=> Set[String]()
+      }
+    println("Unseen event types: ",unseen_event_types_till_now)
+
     //  extract new ex-choices and co-existances based on the newly appeared distinct
     val new_existence_records: Dataset[ExChoiceRecord] = complete_traces_that_changed
       .groupByKey(x => x.trace_id)
@@ -145,10 +166,6 @@ object extract_unordered {
 
 //    println("New Existence Records:")
 //    new_existence_records.show()
-
-    //    define table names
-    val ex_choice_table = s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
-    val co_existence_table = s"""s3a://siesta/${metaData.log_name}/coExistenceTable.parquet/"""
 
     // Extract previous ex-choice records if they exist
     val prev_ex_choices: Dataset[ExChoiceRecord] = try {
@@ -217,6 +234,44 @@ object extract_unordered {
       .mode(SaveMode.Append)
       .partitionBy("trace_id")
       .parquet(co_existence_table)
+
+    // there is a case where new even types appear in this batch and they haven't appeared in the previous batches
+    //in that case all unchanged event types should create new ex-choices records for each unique event_type they have
+    
+    // already identified previous event types
+    // get from the seq table all unique event types per trace_id that does not contain the new event type
+    val seq_table = s"""s3a://siesta/${metaData.log_name}/seq.parquet/"""
+    val additional_ex_choice = spark.read.parquet(seq_table)
+      .select("trace_id","event_type")
+      .distinct()
+      .groupBy("trace_id")
+      .agg(functions.collect_list("event_type").alias("event_types"))
+      .filter(row => {
+        val eventTypes = row.getAs[Seq[String]]("event_types")
+        !unseen_event_types_till_now.exists(eventTypes.contains)
+      })
+      .flatMap(row => {
+        val traceId = row.getAs[String]("trace_id")
+        val eventTypes = row.getAs[Seq[String]]("event_types")
+        eventTypes.flatMap(et =>
+          unseen_event_types_till_now.map(unseen =>
+            if (et < unseen) {
+              ExChoiceRecord(traceId, et, unseen, 0)
+            } else {
+              ExChoiceRecord(traceId, unseen, et, 1)
+            }
+          )
+        )
+      })
+    if(!additional_ex_choice.isEmpty){
+      additional_ex_choice
+        .as[ExChoiceRecord]
+        .write
+        .mode(SaveMode.Append)
+        .partitionBy("trace_id")
+        .parquet(ex_choice_table)
+    }
+
   }
 
   def extract_unordered_constraints(metaData: MetaData): Unit = {
