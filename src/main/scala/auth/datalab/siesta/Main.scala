@@ -91,7 +91,7 @@ object Main {
           /** Extract all preprocessed events of the log from S3 */
           val events: Dataset[Event] = s3Connector.get_events_sequence_table()
           events.persist(StorageLevel.MEMORY_AND_DISK)
-          println(s"Total events: ${events.count()}")
+//          println(s"Total events: ${events.count()}")
 
           /** Create a map event_type -> #total occurrences in log */
           val eventTypeOccurrencesMap: scala.collection.Map[String, Long] = events
@@ -101,16 +101,15 @@ object Main {
             .collect()
             .map(row => (row.getAs[String]("eventType"), row.getAs[Long]("unique")))
             .toMap
-          val bEventTypeOccurrencesMap = spark.sparkContext.broadcast(eventTypeOccurrencesMap)
 
           val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
           val bTraceIds = spark.sparkContext.broadcast(traceIds)
-          println(s"Total traces: ${traceIds.size}")
+//          println(s"Total traces: ${traceIds.size}")
 
           /** Retain separately only the newly arrived events */
           val prevMiningTs = metaData.last_declare_mined
           val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || hardRediscover) events
-                          else events.filter(e => {true /*Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.ts))*/})
+                          else events.filter(e => {/*true*/ Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.ts))})
 
           /** Distinguish traces that only evolved; the bounds include the new events */
           val evolvedTracesBounds: scala.collection.Map[String, (Int, Int)] = newEvents

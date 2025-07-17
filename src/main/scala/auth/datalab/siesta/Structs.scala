@@ -33,13 +33,15 @@ object Structs {
   case class PairConstraintRow(rule: String, eventA: String, eventB: String, trace: String)
   case class PairConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 
-  case class URow(eventType:String, trace:String)
-  case class IRow(eventA:String, eventB:String, trace:String)
-  case class UnorderedHelper(eventA:String,eventB:String, ua:Set[String], ub:Set[String], pairs:Set[String],key:String)
-  case class UnorderedConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
+//  case class URow(eventType:String, trace:String)
+//  case class IRow(eventA:String, eventB:String, trace:String)
+//  case class UnorderedHelper(eventA:String,eventB:String, ua:Set[String], ub:Set[String], pairs:Set[String],key:String)
+//  case class UnorderedConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
+//  case class PairConstraintSupported(rule:String, activation:String, target:String, support:Double) extends Serializable
 
-  case class PairConstraintSupported(rule:String, activation:String, target:String, support:Double) extends Serializable
 
+  case class ExChoiceRecord(traceId: String, eventA: String, eventB: String, found: Int)
+  case class CoExistenceRecord(traceId: String, eventA: String, eventB: String)
 
   // Target-branched constraint with a single source and multiple targets
   case class TargetBranchedPairConstraint(
