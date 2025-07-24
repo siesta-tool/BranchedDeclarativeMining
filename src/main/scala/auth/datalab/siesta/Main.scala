@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Config, Event}
+import auth.datalab.siesta.StandardStructs.{Config, Event}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel
@@ -57,7 +57,11 @@ object Main {
 
         opt[Boolean]('h', "hardRediscover")
           .action((x, c) => c.copy(hardRediscovery = x))
-          .text("Hard rediscovery, default is false")
+          .text("Hard rediscovery, default is false"),
+
+        opt[Boolean]('q', "quickMining")
+          .action((x, c) => c.copy(quickMining = x))
+          .text("Quick mining, default is false"),
       )
     }
 
@@ -74,6 +78,7 @@ object Main {
         println(s"Filter out Rare events: ${config.filterRare}")
         println(s"Filter out under-bound templates: ${config.filterUnderBound}")
         println(s"Find all constraints from beginning: ${config.hardRediscovery}")
+        println(s"Quick mining: ${config.quickMining}")
 
         val support = config.support
         var branchingPolicy = config.branchingPolicy
@@ -83,139 +88,148 @@ object Main {
         val dropFactor = config.dropFactor
         val filterUnderBound = if (branchingBound > 0) config.filterUnderBound else false
         val hardRediscover = config.hardRediscovery
+        val quickMining = config.quickMining
         val metaData = s3Connector.get_metadata()
 
         val spark = SparkSession.builder().getOrCreate()
-        spark.time({ import spark.implicits._
+        spark.time({
+          import spark.implicits._
 
-          /** Extract all preprocessed events of the log from S3 */
-          val events: Dataset[Event] = s3Connector.get_events_sequence_table()
-          events.persist(StorageLevel.MEMORY_AND_DISK)
-//          println(s"Total events: ${events.count()}")
+          if (quickMining) {
+            QuickMain.main(s3Connector, support, hardRediscover)
+          } else {
 
-          /** Create a map event_type -> #total occurrences in log */
-          val eventTypeOccurrencesMap: scala.collection.Map[String, Long] = events
-            .select("eventType", "trace")
-            .groupBy("eventType")
-            .agg(functions.count("trace").alias("unique"))
-            .collect()
-            .map(row => (row.getAs[String]("eventType"), row.getAs[Long]("unique")))
-            .toMap
+            /** Extract all preprocessed events of the log from S3 */
+            val events: Dataset[Event] = s3Connector.get_events_sequence_table()
+            events.persist(StorageLevel.MEMORY_AND_DISK)
+            //          println(s"Total events: ${events.count()}")
 
-          val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
-          val bTraceIds = spark.sparkContext.broadcast(traceIds)
-//          println(s"Total traces: ${traceIds.size}")
+            /** Create a map event_type -> #total occurrences in log */
+            val eventTypeOccurrencesMap: scala.collection.Map[String, Long] = events
+              .select("eventType", "trace")
+              .groupBy("eventType")
+              .agg(functions.count("trace").alias("unique"))
+              .collect()
+              .map(row => (row.getAs[String]("eventType"), row.getAs[Long]("unique")))
+              .toMap
 
-          /** Retain separately only the newly arrived events */
-          val prevMiningTs = metaData.last_declare_mined
-          val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || hardRediscover) events
-                          else events.filter(e => {/*true*/ Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.ts))})
+            val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
+            val bTraceIds = spark.sparkContext.broadcast(traceIds)
+            //          println(s"Total traces: ${traceIds.size}")
 
-          /** Distinguish traces that only evolved; the bounds include the new events */
-          val evolvedTracesBounds: scala.collection.Map[String, (Int, Int)] = newEvents
-            .groupBy("trace")
-            .agg(functions.min("pos"), functions.max("pos"))
-            .map(x => (x.getAs[String]("trace"), (x.getAs[Int]("min(pos)"), x.getAs[Int]("max(pos)"))))
-            .rdd
-            .keyBy(_._1)
-            .mapValues(_._2)
-            .collectAsMap()
-          val bEvolvedTracesBounds = spark.sparkContext.broadcast(evolvedTracesBounds)
-          val evolvedTracesIds = evolvedTracesBounds.keys.toSeq
-          val bEvolvedTracesIds = spark.sparkContext.broadcast(evolvedTracesIds)
+            /** Retain separately only the newly arrived events */
+            val prevMiningTs = metaData.last_declare_mined
+            val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || hardRediscover) events
+            else events.filter(e => {
+              /*true*/ Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.ts))
+            })
 
-          /**
-           * Retain the all events that belong to an evolved trace since already-mined constraints may be affected from these traces
-           */
-          val affectedEvents = events.filter(functions.col("trace").isin(bEvolvedTracesIds.value:_*))
-          affectedEvents.count()
-          affectedEvents.persist(StorageLevel.MEMORY_AND_DISK)
+            /** Distinguish traces that only evolved; the bounds include the new events */
+            val evolvedTracesBounds: scala.collection.Map[String, (Int, Int)] = newEvents
+              .groupBy("trace")
+              .agg(functions.min("pos"), functions.max("pos"))
+              .map(x => (x.getAs[String]("trace"), (x.getAs[Int]("min(pos)"), x.getAs[Int]("max(pos)"))))
+              .rdd
+              .keyBy(_._1)
+              .mapValues(_._2)
+              .collectAsMap()
+            val bEvolvedTracesBounds = spark.sparkContext.broadcast(evolvedTracesBounds)
+            val evolvedTracesIds = evolvedTracesBounds.keys.toSeq
+            val bEvolvedTracesIds = spark.sparkContext.broadcast(evolvedTracesIds)
 
-          // TODO: evaluate if we need this
-          // All possible event_type pairs matrix
-          val allEventOccurrences = s3Connector.get_single_table().rdd.groupBy(_._1).map(x =>(x._1, x._2.map(_._2).toSet))
-          val activityMatrix = allEventOccurrences.cartesian(allEventOccurrences)
-          activityMatrix.persist(StorageLevel.MEMORY_AND_DISK)
+            /**
+             * Retain the all events that belong to an evolved trace since already-mined constraints may be affected from these traces
+             */
+            val affectedEvents = events.filter(functions.col("trace").isin(bEvolvedTracesIds.value: _*))
+            affectedEvents.count()
+            affectedEvents.persist(StorageLevel.MEMORY_AND_DISK)
 
-          /**
-           * Position patterns
-           */
-          val position = StandardMining.extractPositionConstraints(
-            logName = metaData.log_name,
-            affectedEvents = affectedEvents,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
-            supportThreshold = support,
-            totalTraces = metaData.traces,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound,
-            hardRediscover = hardRediscover)
+            // TODO: evaluate if we need this
+            // All possible event_type pairs matrix
+            val allEventOccurrences = s3Connector.get_single_table().rdd.groupBy(_._1).map(x => (x._1, x._2.map(_._2).toSet))
+            val activityMatrix = allEventOccurrences.cartesian(allEventOccurrences)
+            activityMatrix.persist(StorageLevel.MEMORY_AND_DISK)
 
-          /** Existence patterns */
-          val existence = StandardMining.extractExistenceConstraints(
-            logName = metaData.log_name,
-            affectedEvents = affectedEvents,
-            supportThreshold = support,
-            totalTraces = metaData.traces,
-            bTraceIds = bTraceIds,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound)
+            /**
+             * Position patterns
+             */
+            val position = StandardMining.extractPositionConstraints(
+              logName = metaData.log_name,
+              affectedEvents = affectedEvents,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
+              supportThreshold = support,
+              totalTraces = metaData.traces,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound,
+              hardRediscover = hardRediscover)
 
-          /** Unordered patterns */
-          val unorder = StandardMining.extractUnordered(
-            logName = metaData.log_name,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
-            affectedEvents = affectedEvents,
-            bTraceIds = bTraceIds,
-            activityMatrix = activityMatrix,
-            allEventOccurrences = allEventOccurrences,
-            supportThreshold = support,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            branchingType = branchingType,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound)
+            /** Existence patterns */
+            val existence = StandardMining.extractExistenceConstraints(
+              logName = metaData.log_name,
+              affectedEvents = affectedEvents,
+              supportThreshold = support,
+              totalTraces = metaData.traces,
+              bTraceIds = bTraceIds,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound)
 
-          /** Ordered patterns */
-          val ordered = StandardMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
-            bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
-            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
+            /** Unordered patterns */
+            val unorder = StandardMining.extractUnordered(
+              logName = metaData.log_name,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
+              affectedEvents = affectedEvents,
+              bTraceIds = bTraceIds,
+              activityMatrix = activityMatrix,
+              allEventOccurrences = allEventOccurrences,
+              supportThreshold = support,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              branchingType = branchingType,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound)
+
+            /** Ordered patterns */
+            val ordered = StandardMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
+              bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
+              branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
 
-          val l = ListBuffer[String]()
-          events.unpersist()
-          activityMatrix.unpersist()
-          affectedEvents.unpersist()
+            val l = ListBuffer[String]()
+            events.unpersist()
+            activityMatrix.unpersist()
+            affectedEvents.unpersist()
 
-          ordered.union(position).union(existence).union(unorder).foreach(x => {
-            val support = f"${x._3.length.toDouble / traceIds.size}%.3f"
-            l += s"${x._1}|${x._2}|${x._3.mkString(",")}|$support\n"
-          })
-          println("Constraints mined: " + l.size)
+            ordered.union(position).union(existence).union(unorder).foreach(x => {
+              val support = f"${x._3.length.toDouble / traceIds.size}%.3f"
+              l += s"${x._1}|${x._2}|${x._3.mkString(",")}|$support\n"
+            })
+            println("Constraints mined: " + l.size)
 
-          branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
+            branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
 
-          val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
-          val writer = new BufferedWriter(new FileWriter(file))
-          l.toList.sorted.foreach(writer.write)
-          writer.close()
+            val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
+            val writer = new BufferedWriter(new FileWriter(file))
+            l.toList.sorted.foreach(writer.write)
+            writer.close()
 
-          if (!newEvents.isEmpty) {
-            metaData.last_declare_mined = newEvents.rdd
-              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
-            s3Connector.write_metadata(metaData)
+            if (!newEvents.isEmpty) {
+              metaData.last_declare_mined = newEvents.rdd
+                .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => {
+                  if (x.after(y)) x else y
+                }).toString
+              s3Connector.write_metadata(metaData)
+            }
           }
         })
       case _ =>
         throw new IllegalArgumentException("Wrong configuration!")
     }
-
   }
-
 }

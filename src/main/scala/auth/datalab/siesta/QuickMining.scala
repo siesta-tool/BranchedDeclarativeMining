@@ -1,490 +1,573 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs._
+import auth.datalab.siesta.QuickStructs._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.{collect_list, count, lit}
 import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
 import org.apache.spark.storage.StorageLevel
+
 
 import scala.collection.mutable.ListBuffer
 
 object QuickMining {
 
-  /**
-   * Extracts position constraints from the new events and merges them with the existing ones.
-   *
-   * @param logName              The name of the log.
-   * @param affectedEvents       The new events to process.
-   * @param bEvolvedTracesBounds Broadcast variable containing the bounds of evolved traces.
-   * @param totalTraces          Total number of traces in the log.
-   * @param supportThreshold     Support threshold for filtering constraints.
-   * @param branchingPolicy      Branching policy for constraint extraction.
-   * @param branchingBound       Branching bound for constraint extraction.
-   * @param dropFactor           Drop factor for constraint extraction.
-   * @param filterRare           Flag to filter rare constraints.
-   * @param filterUnderBound     Flag to filter under-bound constraints.
-   * @return An array of extracted position constraints.
-   */
-  def extractPositionConstraints(logName: String,
-                                 affectedEvents: Dataset[Event],
-                                 bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-                                 totalTraces: Long,
-                                 supportThreshold: Double,
-                                 hardRediscover: Boolean): Array[(String, String, Array[String])] = {
+
+  def extract_positions(new_events: Dataset[Event], logname: String, complete_traces_that_changed: Dataset[Event],
+                        bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
+                        support: Double, total_traces: Long): Array[PositionConstraint] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
+    //get previous data if exist
+    val position_path = s"""s3a://siesta/$logname/declare_quick/position.parquet/"""
 
-    // Gather previous position constraints if exist
-    val positionConstraintsPath = s"""s3a://siesta/$logName/declare/position.parquet/"""
-    val oldConstraints = if (!hardRediscover) try {
-      spark.read.parquet(positionConstraintsPath).as[PositionConstraintRow]
+    val previously = try {
+      spark.read.parquet(position_path).as[PositionConstraint]
     } catch {
-      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraintRow]
-    } else spark.emptyDataset[PositionConstraintRow]
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PositionConstraint]
+    }
 
-    // Filter out oldConstraints to exclude existence measurements for the traces
-    // that have evolved and keep only the unrelated ones
-    val fixedOldConstraints = oldConstraints
-      .join(affectedEvents.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
-      .select("rule", "eventType", "trace")
-      .as[PositionConstraintRow]
-
-    // Find the first and last position constraints for the new events
-    val newEventsConstraints: Dataset[PositionConstraintRow] = affectedEvents.map(x => {
-        if (x.pos == 0) Some(PositionConstraintRow("first", x.eventType, x.trace)) // a new trace is initiated by this new event
-        else if (bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == x.pos) // this new event is the last event of the evolved trace
-          Some(PositionConstraintRow("last", x.eventType, x.trace))
-        else null // this new event is intermediate in an evolved trace
+    val plusConstraint: Dataset[PositionConstraint] = new_events.map(x => {
+        if (x.pos == 0) {
+          Some(PositionConstraint("first", x.event_type, 1L))
+        }
+        else if (bChangedTraces.value.getOrElse(x.trace_id, (-1, -1))._2 == x.pos) { //this is the last event
+          Some(PositionConstraint("last", x.event_type, 1L))
+        }
+        else {
+          null
+        }
       }).filter(_.isDefined)
       .map(_.get)
 
-    // Merge the new constraints with the fixed old ones
-    val constraints = fixedOldConstraints
-      .union(newEventsConstraints)
+    val endPosMinus = complete_traces_that_changed
+      .filter(x => {
+        bChangedTraces.value(x.trace_id)._1 - 1 == x.pos
+      })
+      .map(x => PositionConstraint("last", x.event_type, -1L))
+
+    val new_positions_constraints = plusConstraint.union(endPosMinus)
+      .union(previously)
       .rdd
-      .keyBy(x => (x.rule, x.eventType))
+      .keyBy(x => (x.rule, x.event_type))
+      .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.occurrences + y.occurrences))
       .map(_._2)
-      .toDS()
 
+    new_positions_constraints.count()
+    new_positions_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-    constraints.count()
-    constraints.persist(StorageLevel.MEMORY_AND_DISK)
-    constraints
+    new_positions_constraints.toDS()
       .write
       .mode(SaveMode.Overwrite)
-      .parquet(positionConstraintsPath)
+      .parquet(position_path)
 
-    val response = constraints
-      .rdd
-      .map(x => PositionConstraint(x.rule, x.eventType, Array(x.trace)))
-      .keyBy(x => (x.rule, x.eventType))
-      .reduceByKey((x, y) => PositionConstraint(x.rule, x.eventType, x.traces ++ y.traces))
-      .map(_._2)
-      .toDS()
+    val response = this.extract_all_position_constraints(new_positions_constraints, support, total_traces)
 
-    response.count()
-    response.persist(StorageLevel.MEMORY_AND_DISK)
-
-    var result = Array.empty[(String, String, Array[String])]
-
-    response.collect().foreach { x =>
-      val support = x.traces.length.toDouble / totalTraces
-      if (support > supportThreshold) {
-        result = result :+ ((x.rule, x.eventType, x.traces))
-      }
-    }
-    constraints.unpersist()
-    result
+    new_positions_constraints.unpersist()
+    response
   }
 
-  def extractExistenceConstraints(logName: String,
-                                  affectedEvents: Dataset[Event],
-                                  supportThreshold: Double,
-                                  totalTraces: Long,
-                                  bTraceIds: Broadcast[Set[String]]
-                                 ): Array[(String, String, Array[String])] = {
+
+  def extract_existence(logname: String, complete_traces_that_changed: Dataset[Event],
+                        bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
+                        support: Double, total_traces: Long): Array[ExistenceConstraint] = {
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
-
     //get previous data if exist
-    val existencePath = s"""s3a://siesta/$logName/declare/existence.parquet/"""
-    val oldConstraints = try {
-      spark.read.parquet(existencePath).as[ExactlyConstraintRow]
+    val existence_path = s"""s3a://siesta/$logname/declare_quick/existence.parquet/"""
+
+    val previously = try {
+      spark.read.parquet(existence_path)
+        .map(x => ActivityExactly(x.getString(0), x.getInt(1), x.getLong(2)))
     } catch {
-      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[ExactlyConstraintRow]
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[ActivityExactly]
     }
 
-    // Take the affected events and re-evaluate the existence on their traces
-    val newConstraints = affectedEvents
-      .groupBy($"eventType", $"trace")
-      .agg(count("*").as("instances"))
-      .withColumn("rule", lit("exactly"))
-      .select($"rule", $"eventType", $"instances", $"trace")
-      .as[ExactlyConstraintRow]
+    //extract changes from the new ones: add news and remove previous records
+    val changesInConstraints = complete_traces_that_changed
+      .rdd
+      .groupBy(_.trace_id)
+      .flatMap(t => {
+        val added_events = bChangedTraces.value(t._1) //gets starting and ending position of the new events
 
-    // Filter out oldConstraints to exclude existence measurements for the traces
-    // that have evolved and keep only the unrelated ones
-    val filteredPreviously = oldConstraints
-      .join(newConstraints.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
-      .as[ExactlyConstraintRow]
+        val all_trace: Map[String, Int] = t._2.map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
 
-    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"eventType", $"instances", $"trace").as[ExactlyConstraintRow])
-
-    finalConstraints.count()
-    finalConstraints.persist(StorageLevel.MEMORY_AND_DISK)
-    finalConstraints.write.mode(SaveMode.Overwrite).parquet(existencePath)
-
-    val response: Dataset[ExactlyConstraint] = finalConstraints.rdd
-      .map(x => {
-        ExactlyConstraint(x.rule, x.eventType, x.instances, Array(x.trace))
+        val previousValues: Map[String, Int] = if (added_events._1 != 0) { //there are previous events from this trace
+          t._2.filter(_.pos < added_events._1).map(e => (e.event_type, 1)).groupBy(_._1).mapValues(_.size)
+        } else {
+          Map.empty[String, Int]
+        }
+        val l = ListBuffer[ActivityExactly]()
+        all_trace.foreach(aT => {
+          l += ActivityExactly(aT._1, aT._2, 1L)
+          if (previousValues.contains(aT._1)) { // this activity existed at least once in the previous trace
+            l += ActivityExactly(aT._1, previousValues(aT._1), -1L)
+          }
+        })
+        l.toList
       })
-      .keyBy(x => (x.rule, x.eventType, x.instances))
-      .reduceByKey((x, y) => ExactlyConstraint(x.rule, x.eventType, x.instances, x.traces ++ y.traces))
+
+    val merged_constraints = changesInConstraints.union(previously.rdd)
+      .keyBy(x => (x.event_type, x.occurrences))
+      .reduceByKey((x, y) => ActivityExactly(x.event_type, x.occurrences, x.contained + y.contained))
       .map(_._2)
       .toDS()
 
-    val completeSingleConstraints = this.extractAllExistenceConstraints(response, bTraceIds)
+    merged_constraints.count()
+    merged_constraints.persist(StorageLevel.MEMORY_AND_DISK)
 
-    var result = Array.empty[(String, String, Array[String])]
-    completeSingleConstraints.foreach { x =>
-      val support = Set(x.traces).size.toDouble / totalTraces
-      if (support > supportThreshold) {
-        result = result :+ (x.rule, x.eventA + "|" + x.eventB, x.traces)
-      }
-    }
-    finalConstraints.unpersist()
-    result
+    merged_constraints.toDF()
+      .write.mode(SaveMode.Overwrite)
+      .parquet(existence_path)
+
+    val response = this.extract_all_existence_constraints(merged_constraints, support, total_traces)
+    merged_constraints.unpersist()
+
+    response
   }
 
-  def extractAllExistenceConstraints(existences: Dataset[ExactlyConstraint],
-                                     bTraceIds: Broadcast[Set[String]]): Array[PairConstraint] = {
-    existences
+  def extract_unordered(logname: String, complete_traces_that_changed: Dataset[Event],
+                        bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
+                        activity_matrix: RDD[(String, String)],
+                        support: Double, total_traces: Long): Array[PairConstraint] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    //get previous U[x] if exist
+    val u_path = s"""s3a://siesta/$logname/declare_quick/unorder/u.parquet/"""
+
+    val previously = try {
+      spark.read.parquet(u_path)
+        .map(x => (x.getString(0), x.getLong(1)))
+    } catch {
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[(String, Long)]
+    }
+
+    //calculate new event types in the traces that changed
+    val u_new: RDD[(String, Long)] = complete_traces_that_changed //this will produce rdd (event_type, #new occurrences)
       .rdd
-      .groupBy(_.eventType)
-      .flatMap { case (event_type, activities) =>
-        val l = ListBuffer[PairConstraint]()
+      .groupBy(_.trace_id)
+      .flatMap(t => { //find new event types per traces
+        val new_positions = bChangedTraces.value(t._1)
+        val prevEvents: Set[String] = if (new_positions._1 != 0) {
+          t._2.map(_.event_type).toArray.slice(0, new_positions._1 - 1).toSet
+        } else {
+          Set.empty[String]
+        }
+        t._2.toArray
+          .slice(new_positions._1, new_positions._2 + 1) //+1 because last one is exclusive
+          .map(_.event_type)
+          .filter(e => !prevEvents.contains(e))
+          .distinct
+          .map(e => (e, 1L)) //mapped to event type,1 (they will be counted later)
+      })
+      .keyBy(_._1)
+      .reduceByKey((a, b) => (a._1, a._2 + b._2))
+      .map(_._2)
 
-        val sortedActivities = activities.toList.sortBy(_.instances)
-        var cumulativeAbsence = bTraceIds.value diff activities.flatMap(_.traces).toSet
-        var cumulativeExistence = bTraceIds.value diff activities.flatMap(_.traces).toSet
+    val merge_u = previously.rdd.fullOuterJoin(u_new)
+      .map(x => {
+        val total = x._2._1.getOrElse(0L) + x._2._2.getOrElse(0L)
+        (x._1, total)
+      })
+      .toDS()
 
-        sortedActivities.foreach { activity =>
-          // Exactly constraint
-          l += PairConstraint("exactly",
-            event_type,
-            activity.instances.toString,
-            activity.traces)
+    merge_u.count()
+    merge_u.persist(StorageLevel.MEMORY_AND_DISK)
+    merge_u.write.mode(SaveMode.Overwrite).parquet(u_path)
 
-          // Existence constraint
-          l += PairConstraint("existence",
-            event_type,
-            activity.instances.toString,
-            (bTraceIds.value diff cumulativeExistence).toArray)
+    //get previous |I[a,b]UI[b,a]| if exist
+    val i_path = s"""s3a://siesta/$logname/declare_quick/unorder/i.parquet/"""
 
-          cumulativeExistence ++= activity.traces
+    val previously_i = try {
+      spark.read.parquet(i_path)
+        .map(x => (x.getString(0), x.getString(1), x.getLong(2)))
+    } catch {
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[(String, String, Long)]
+    }
 
-          // Absence constraint
-          l += PairConstraint("absence", event_type, activity.instances.toString, cumulativeAbsence.toArray)
+    val new_pairs = complete_traces_that_changed
+      .rdd
+      .groupBy(_.trace_id)
+      .flatMap(t => { // find new event types per traces
+        val new_positions = bChangedTraces.value(t._1)
+        var prevEvents: Set[String] = if (new_positions._1 != 0) {
+          t._2.map(_.event_type).toArray.slice(0, new_positions._1 - 1).toSet
+        } else {
+          Set.empty[String]
+        }
+        val new_events = t._2.toArray
+          .slice(new_positions._1, new_positions._2 + 1) // +1 because last one is exclusive
+          .map(_.event_type)
+          .toSet
 
-          cumulativeAbsence ++= activity.traces
+        val l = ListBuffer[(String, String, Long)]()
+
+        // Iterate over new events and previous events
+        for (e1 <- new_events if !prevEvents.contains(e1)) {
+          for (e2 <- prevEvents) {
+            if (e1 < e2) { l += ((e1, e2, 1L)) } // Add to the list if e1 < e2 and they're unique
+            else if (e2 > e1) { l += ((e2,e1,1L)) }
+          }
+          prevEvents = prevEvents + e1 // Return a new Set with e1 added
         }
 
-        l += PairConstraint("absence", event_type, (sortedActivities.last.instances + 1).toString, bTraceIds.value.toArray)
+        l.toList
+      })
+      .keyBy(x => (x._1, x._2))
+      .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
+
+    val merge_i = new_pairs
+      .fullOuterJoin(previously_i.rdd.keyBy(x => (x._1, x._2)))
+      .map(x => {
+        val total = x._2._1.getOrElse(("", "", 0L))._3 + x._2._2.getOrElse(("", "", 0L))._3
+        (x._1._1, x._1._2, total)
+      })
+      .toDS()
+
+
+    //    //extract pairs that didn't exist before in the traces
+    //    val new_pairs = complete_pairs_that_changed
+    //      .rdd
+    //      .filter(x => x.eventA != x.eventB)
+    //      .groupBy(_.trace_id)
+    //      .flatMap(t => {
+    //        val new_positions = bChangedTraces.value(t._1)
+    //        val prev_pairs = t._2. //pairs that concluded in the previous batches
+    //          filter(_.positionB < new_positions._1)
+    //          .map(x => (x.eventA, x.eventB))
+    //          .toSet
+    //        val news = t._2 //new pairs that concluded in this batch
+    //          .filter(_.positionB >= new_positions._1) //for  new events
+    //          .map(x => { //swap positions in order to search for new traces that contain either (a,b) and (b,a)
+    //            if (x.eventA > x.eventB) {
+    //              PairFull(x.eventB, x.eventA, x.trace_id, x.positionB, x.positionA)
+    //            } else {
+    //              x
+    //            }
+    //          })
+    //          .filter(x => !prev_pairs.contains((x.eventA, x.eventB)) && !prev_pairs.contains((x.eventB, x.eventA)))
+    //        news
+    //      })
+    //      .map(x => (x.eventA, x.eventB, x.trace_id))
+    //      .distinct()
+    //
+    //    new_pairs.count()
+    //    new_pairs.persist(StorageLevel.MEMORY_AND_DISK)
+    //
+    //    val merge_i = new_pairs
+    //      .map(x => (x._1, x._2, 1L))
+    //      .keyBy(x => (x._1, x._2))
+    //      .reduceByKey((x, y) => (x._1, x._2, x._3 + y._3))
+    //      .fullOuterJoin(previously_i.rdd.keyBy(x => (x._1, x._2)))
+    //      .map(x => {
+    //        val total = x._2._1.getOrElse(("", "", 0L))._3 + x._2._2.getOrElse(("", "", 0L))._3
+    //        (x._1._1, x._1._2, total)
+    //      })
+    //      .toDS()
+
+    merge_i.count()
+    merge_i.persist(StorageLevel.MEMORY_AND_DISK)
+    merge_i.write.mode(SaveMode.Overwrite).parquet(i_path)
+
+    val c = activity_matrix
+      .map(x => (x._1, x._2))
+      .keyBy(_._1)
+      //key by the first activity and bring the new U[a]
+      .leftOuterJoin(merge_u.rdd.keyBy(_._1))
+      .map(x => {
+        val eventA = x._2._1._1
+        val eventB = x._2._1._2
+        val key = if (eventA < eventB) eventA + eventB
+        else eventB + eventA
+        UnorderedHelper(eventA, eventB, x._2._2.getOrElse("", 0L)._2, 0L, 0L, key)
+      })
+      .keyBy(_.eventB) //group by the second activity and bring U[B]
+      .leftOuterJoin(merge_u.rdd.keyBy(_._1))
+      .map(x => {
+        UnorderedHelper(x._2._1.eventA, x._2._1.eventB, x._2._1.ua, x._2._2.getOrElse("", 0L)._2, 0L, x._2._1.key)
+      })
+      .keyBy(_.key)
+      .leftOuterJoin(merge_i.rdd.keyBy(x => x._1 + x._2))
+      .map(x => {
+        val p = x._2._1
+        UnorderedHelper(p.eventA, p.eventB, p.ua, p.ub, x._2._2.getOrElse("", "", 0L)._3, p.key)
+      })
+      .distinct()
+      .flatMap(x => extract_unordered_constraints(x, total_traces))
+      .filter(x => (x.occurrences / total_traces) >= support)
+      .map(x => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences / total_traces))
+      .collect()
+
+    merge_u.unpersist()
+    merge_i.unpersist()
+    new_pairs.unpersist()
+
+    c
+
+
+  }
+
+  def extract_ordered(logname: String, complete_traces_that_changed: Dataset[Event],
+                      bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
+                      bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
+                      activity_matrix: RDD[(String, String)],
+                      support: Double): Array[PairConstraint] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    //get previous data if exist
+    val order_path = s"""s3a://siesta/$logname/declare_quick/order.parquet/"""
+
+    val previously = try {
+      spark.read.parquet(order_path)
+        .map(x => PairConstraint(x.getString(0), x.getString(1), x.getString(2), x.getDouble(3)))
+    } catch {
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraint]
+    }
+
+    val new_ordered_relations = complete_traces_that_changed.rdd
+      .groupBy(_.trace_id)
+      .flatMap(t => {
+        val new_pos = bChangedTraces.value(t._1)
+        //activities -> reverse sorted positions of the events that correspond to them
+        val events: Map[String, Seq[Int]] = t._2.map(e => (e.event_type, e.pos))
+          .groupBy(_._1)
+          .mapValues(e => e.map(_._2).toSeq.sortWith((a, b) => a > b))
+        val l = ListBuffer[PairConstraint]()
+        // new events are the ones that will extract the new rules
+        // precedence loop
+        for (i <- new_pos._1 to new_pos._2) {
+          val current_event_type = t._2.toSeq(i).event_type
+          val all_previous = events(current_event_type).filter(x => x < i)
+          val prev = all_previous match {
+            case Nil => 0
+            case _ => all_previous.max
+          }
+          // precedence loop
+          events.keySet.filter(x => x != current_event_type)
+            .foreach(activity_a => {
+              val valid_a = events(activity_a)
+                .filter(pos_a => pos_a < i)
+              if (valid_a.nonEmpty) {
+                val pos_a = valid_a.max
+                if (pos_a < i) {
+                  l += PairConstraint("precedence", activity_a, current_event_type, 1.0)
+                  if (pos_a >= prev) {
+                    l += PairConstraint("alternate-precedence", activity_a, current_event_type, 1.0)
+                    if (pos_a == i - 1) {
+                      l += PairConstraint("chain-precedence", activity_a, current_event_type, 1.0)
+                    }
+                  }
+                }
+              }
+            })
+
+          //response loop
+          events.keySet.filter(x => x != current_event_type)
+            .foreach(activity_a => {
+              var largest = true
+              events(activity_a).foreach(pos_a => {
+                if (pos_a < i && pos_a >= prev) {
+                  l += PairConstraint("response", activity_a, current_event_type, 1.0)
+                  if (largest) {
+                    l += PairConstraint("alternate-response", activity_a, current_event_type, 1.0)
+                    largest = false
+                    if (pos_a == i - 1) {
+                      l += PairConstraint("chain-response", activity_a, current_event_type, 1.0)
+                    }
+                  }
+                }
+              })
+            })
+        }
+        l.toList
+      })
+      .keyBy(x => (x.rule, x.eventA, x.eventB))
+      .reduceByKey((x, y) => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences + y.occurrences))
+      .map(_._2)
+
+    //merge with previous values if exist
+    val updated_constraints = new_ordered_relations
+      .keyBy(x => (x.rule, x.eventA, x.eventB))
+      .fullOuterJoin(previously.rdd.keyBy(x => (x.rule, x.eventA, x.eventB)))
+      .map(x => PairConstraint(x._1._1, x._1._2, x._1._3,
+        x._2._1.getOrElse(PairConstraint("", "", "", 0L)).occurrences +
+          x._2._2.getOrElse(PairConstraint("", "", "", 0L)).occurrences))
+      .toDS()
+
+    updated_constraints.count()
+    updated_constraints.persist(StorageLevel.MEMORY_AND_DISK)
+
+    //    write updated constraints back to s3
+    updated_constraints.write.mode(SaveMode.Overwrite).parquet(order_path)
+
+    //compute constraints using support and collect them
+    val constraints = this.extract_all_ordered_constraints(updated_constraints, bUnique_traces_to_event_types, activity_matrix, support)
+
+    updated_constraints.unpersist()
+    constraints
+
+  }
+
+  def handle_negatives(logname: String, activity_matrix: RDD[(String, String)]): Array[(String, String)] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    //get previous data if exist
+    val negative_path = s"""s3a://siesta/$logname/declare_quick/negatives.parquet/"""
+
+    val order_path = s"""s3a://siesta/$logname/declare_quick/order.parquet/"""
+
+    val ordered_response = try {
+      spark.read.parquet(order_path)
+        .filter(x => x.getString(0) == "response" && x.getDouble(3) > 0)
+        .map(x => (x.getString(1), x.getString(2)))
+    } catch {
+      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[(String, String)]
+    }
+
+    val new_negative_pairs = activity_matrix.subtract(ordered_response.rdd)
+      .filter(x => x._1 != x._2)
+      .toDS()
+
+    new_negative_pairs.count()
+    new_negative_pairs.persist(StorageLevel.MEMORY_AND_DISK)
+
+    //    write new ones back to S3
+    new_negative_pairs.write.mode(SaveMode.Overwrite).parquet(negative_path)
+
+    val response = new_negative_pairs.collect()
+    new_negative_pairs.unpersist()
+    response
+  }
+
+  private def extract_unordered_constraints(u: UnorderedHelper, total_traces: Long): TraversableOnce[PairConstraint] = {
+    val l = ListBuffer[PairConstraint]()
+    var r: Long = total_traces - u.ua + u.pairs
+    l += PairConstraint("responded existence", u.eventA, u.eventB, r)
+    if (u.eventA < u.eventB) { //that means that we have to calculate all rules
+      r = u.ua + u.ub - u.pairs
+      l += PairConstraint("choice", u.eventA, u.eventB, r)
+      r = total_traces - u.ua - u.ub + 2 * u.pairs
+      l += PairConstraint("co-existence", u.eventA, u.eventB, r)
+      //exclusive_choice = total - co-existence
+      l += PairConstraint("exclusive choice", u.eventA, u.eventB, total_traces - r)
+      //not-existence : traces where a exist and not b, traces where b exists and not a, traces where neither occur
+      r = total_traces - u.pairs
+      l += PairConstraint("not co-existence", u.eventA, u.eventB, r)
+    }
+    l.toList
+  }
+
+  private def extract_all_position_constraints(constraints: RDD[PositionConstraint], support: Double, total_traces: Long): Array[PositionConstraint] = {
+    constraints
+      .filter(x => (x.occurrences / total_traces) >= support)
+      .map(x => PositionConstraint(x.rule, x.event_type, x.occurrences / total_traces))
+      .collect()
+  }
+
+  private def extract_all_existence_constraints(existences: Dataset[ActivityExactly], support: Double, total_traces: Long): Array[ExistenceConstraint] = {
+    existences
+      .rdd
+      .groupBy(_.event_type)
+      .flatMap { case (event_type, activities) =>
+        val l = ListBuffer[ExistenceConstraint]()
+
+        val sortedActivities = activities.toList.sortBy(_.occurrences)
+        var cumulativeAbsence = total_traces - activities.map(_.contained).sum
+        var cumulativeExistence = total_traces - activities.map(_.contained).sum
+
+        sortedActivities.foreach { activity =>
+
+          //Exactly constraint
+          if ((activity.contained.toDouble / total_traces) >= support) {
+            l += ExistenceConstraint("exactly", event_type, activity.occurrences, activity.contained.toDouble / total_traces)
+          }
+          //Existence constraint
+          val s = (total_traces - cumulativeExistence).toDouble / total_traces
+          if (s >= support) {
+            l += ExistenceConstraint("existence", event_type, activity.occurrences, s)
+          }
+          cumulativeExistence += activity.contained
+
+
+          val as = cumulativeAbsence.toDouble / total_traces
+          if (as >= support) {
+            l += ExistenceConstraint("absence", event_type, activity.occurrences, as)
+          }
+          cumulativeAbsence += activity.contained
+
+        }
+
+        l += ExistenceConstraint("absence", event_type, sortedActivities.last.occurrences + 1, 1)
         l.toList
       }.collect()
   }
 
-  def extractUnordered(logName: String,
-                       affectedEvents: Dataset[Event],
-                       bTraceIds: Broadcast[Set[String]],
-                       activityMatrix: RDD[((String, Set[String]), (String, Set[String]))],
-                       allEventOccurrences: RDD[(String, Set[String])],
-                       supportThreshold: Double
-                       ): Array[(String, String, Array[String])] = {
-    val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
-
-    //get previous data if exist
-    val unorderedPath = s"""s3a://siesta/$logName/declare/unordered.parquet/"""
-    val oldConstraints = try {
-      spark.read.parquet(unorderedPath).as[PairConstraintRow]
-    } catch {
-      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
-    }
-
-    // Co-existence constraints WITHOUT THE NON-EXISTENCE OF BOTH
-    val coexistencePositive = affectedEvents.rdd
-      .groupBy(_.trace)
-      .flatMap { case (traceId, events) =>
-        val eventAs = events.map(_.eventType).toSeq.distinct
-        for {
-          e1 <- eventAs
-          e2 <- eventAs
-        } yield (e1, e2, traceId)
-      }.union(oldConstraints.rdd.filter(_.rule == "co-existence-positive")
-        .map(x => (x.eventA, x.eventB, x.trace)))
-      .distinct()
-      .toDS()
-
-    // Find all distinct traces from the log
-    val allTraces = bTraceIds.value
-    // Find the traces where each event does not exist
-    val nonExistenceEvents = allEventOccurrences.map(x => (x._1, allTraces diff x._2))
-    // Find the pairs of events that both do not exist in the same trace
-    val coexistenceNegative = nonExistenceEvents.cartesian(nonExistenceEvents)
-      .map { case ((k1, s1), (k2, s2)) => (k1, k2, s1.intersect(s2)) }
-      .filter { case (_, _, traces) => traces.nonEmpty }
-      .flatMap(x => {
-        val (eventA, eventB, traces) = x
-        traces.map(traceId => (eventA, eventB, traceId))
-      })
-
-    val coexistence = coexistenceNegative.union(coexistencePositive.rdd).map(x => PairConstraintRow("co-existence", x._1, x._2, x._3)).toDS()
-
-    val notCoexistencePositive = activityMatrix.filter { case ((e1, _), (e2, _)) => e1 < e2 }
-      .map { case ((e1, set1), (e2, set2)) =>
-        val symmetricDiff = (set1 diff set2) union (set2 diff set1)
-        (e1, e2, symmetricDiff) // converting to Set[String] if needed
-      }.flatMap { case (e1, e2, diffSet) =>
-        diffSet.map(traceId => (e1, e2, traceId))
-      }
-
-    val notCoexistence = notCoexistencePositive.union(coexistenceNegative.map(x => (x._1, x._2, x._3)))
-      .filter { case (_, _, traces) => traces.nonEmpty }
-      .distinct()
-      .map(x => PairConstraintRow("not co-existence", x._1, x._2, x._3))
-      .toDS()
-
-
-    val choice = activityMatrix.filter { case ((e1, _), (e2, _)) => e1 < e2 }
-      .flatMap { case ((e1, set1), (e2, set2)) =>
-        val unionSet = set1 union set2
-        unionSet.map(traceId => (e1, e2, traceId))
-      }.distinct()
-      .map(x => PairConstraintRow("choice", x._1, x._2, x._3))
-      .toDS()
-
-
-    val exclusiveChoice = notCoexistencePositive.map(x => PairConstraintRow("exclusive choice", x._1, x._2, x._3)).toDS()
-
-    val respondedExistence = coexistencePositive.map(x => PairConstraintRow("responded existence", x._1, x._2, x._3))
-
-
-    val constraintToWrite = coexistencePositive.map(x => PairConstraintRow("co-existence-positive", x._1, x._2, x._3))
-      .union(respondedExistence).distinct().as[PairConstraintRow]
-    constraintToWrite.count()
-    constraintToWrite.persist(StorageLevel.MEMORY_AND_DISK)
-    constraintToWrite.write.mode(SaveMode.Overwrite).parquet(unorderedPath)
-
-    val completeSingleConstraints = coexistence
-      .union(notCoexistence)
-      .union(choice)
-      .union(exclusiveChoice)
-      .union(respondedExistence)
-      .groupBy("rule", "eventA", "eventB")
-      .agg(collect_list($"trace").as("traces"))
-      .as[PairConstraint]
-
-
-
-    var result = ListBuffer.empty[(String, String, Array[String])]
-    completeSingleConstraints.collect().foreach { x =>
-      val support = x.traces.toSet.size.toDouble / bTraceIds.value.size
-      if (support > supportThreshold) {
-        result += ((x.rule, x.eventA + "|" + x.eventB, x.traces.distinct))
-      }
-    }
-    constraintToWrite.unpersist()
-    result.toArray
-  }
-
-  def extractOrdered(logName: String, affectedEvents: Dataset[Event],
-                     bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-                     bTraceIds: Broadcast[Set[String]],
-                     activityMatrix: RDD[((String, Set[String]), (String, Set[String]))],
-                     totalTraces: Long,
-                     supportThreshold: Double,
-                     hardRediscover: Boolean
-                    ): Array[(String, String, Array[String])] = {
-
-    val spark = SparkSession.builder().getOrCreate()
-    import spark.implicits._
-
-    //    val s3Connector = new S3Connector()
-
-    // get previous data if exist
-    val orderPath = s"""s3a://siesta/$logName/declare/order.parquet/"""
-
-    //    val oldConstraints = if (!hardRediscover) try {
-    //      spark.read.parquet(orderPath).as[PairConstraintRow]
-    //    } catch {
-    //      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
-    //    } else spark.emptyDataset[PairConstraintRow]
-
-    val newTraces = bEvolvedTracesBounds.value.filter(_._2._1 == 0).keySet
-
-    def extractResponseRelations(traceId: String, orderedEvents: Seq[Event]) = {
-      (for {
-        (e1, i) <- orderedEvents.zipWithIndex
-        j <- (i + 1) until orderedEvents.length
-      } yield PairConstraintRow("response", e1.eventType, orderedEvents(j).eventType, traceId)).distinct
-    }
-
-    val newConstraints: Dataset[PairConstraintRow] = affectedEvents.rdd
-      .groupBy(_.trace)
-      .filter(x => newTraces.contains(x._1))
-      .flatMap { case (traceId, events) =>
-        val orderedEvents = events.toSeq.sortBy(_.pos)
-
-        val response: Seq[PairConstraintRow] = extractResponseRelations(traceId, orderedEvents)
-
-        val precedence: Seq[PairConstraintRow] =
-          response.flatMap {
-            case PairConstraintRow(_, eventA, eventB, traceId) =>
-              var aSeen = false
-              var isValid = true
-
-              for (e <- orderedEvents if isValid) {
-                if (e.eventType == eventA) {
-                  aSeen = true
-                }
-                if (e.eventType == eventB && !aSeen) {
-                  isValid = false // A `B` occurred before any `A`
-                }
-              }
-
-              if (isValid) Some(PairConstraintRow("precedence", eventA, eventB, traceId))
-              else None
-          }
-
-
-        val succession: Seq[PairConstraintRow] =
-          ((response.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect precedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
-            .map { case (eventA, eventB, trace) => PairConstraintRow("succession", eventA, eventB, trace) }).toSeq
-
-        val alternateResponse: Seq[PairConstraintRow] =
-          response.flatMap {
-            case PairConstraintRow(_, eventA, eventB, traceId) =>
-              var aOpen = false // whether an A is waiting for a B
-              var isSatisfied = true
-
-              for (e <- orderedEvents if isSatisfied && (e.eventType == eventA || e.eventType == eventB)) {
-                e.eventType match {
-                  case `eventA` =>
-                    if (aOpen) isSatisfied = false // Previous A didn't get a B before this A
-                    else aOpen = true // Start waiting for a B
-                  case `eventB` =>
-                    if (aOpen) aOpen = false // B satisfied the last A
-                  // else ignore this B (not between two As)
-                }
-              }
-
-              // After loop, if any A is still open, it's a violation
-              if (isSatisfied && !aOpen) Some(PairConstraintRow("alternate-response", eventA, eventB, traceId))
-              else None //Some(PairConstraintRow("not-chain-succession", eventA, eventB, traceId))
-          }
-
-        val alternatePrecedence: Seq[PairConstraintRow] =
-          precedence.flatMap {
-            case PairConstraintRow(_, eventA, eventB, traceId) =>
-              var aSeen = false // waiting for a B to close the A
-              var isSatisfied = true
-
-              for (e <- orderedEvents if isSatisfied && (e.eventType == eventA || e.eventType == eventB)) {
-                e.eventType match {
-                  case `eventA` =>
-                    aSeen = true // an A opens a precedence "slot" waiting for a B
-                  case `eventB` =>
-                    if (aSeen) aSeen = false // B closes the open A slot
-                    else isSatisfied = false // B occurred without preceding A
-                }
-              }
-
-              if (isSatisfied) Some(PairConstraintRow("alternate-precedence", eventA, eventB, traceId))
-              else None //Some(PairConstraintRow("not-chain-succession", eventA, eventB, traceId))
-          }
-
-        val alternateSuccession: Seq[PairConstraintRow] =
-          (alternateResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect alternatePrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
-            .map { case (eventA, eventB, trace) => PairConstraintRow("alternate-succession", eventA, eventB, trace) }.toSeq
-
-        val chainResponse: Seq[PairConstraintRow] =
-          alternateResponse.flatMap {
-            case PairConstraintRow(_, eventA, eventB, traceId) =>
-              var isSatisfied = true
-
-              for ((e, i) <- orderedEvents.zipWithIndex if isSatisfied && e.eventType == eventA) {
-                if (i + 1 >= orderedEvents.length || orderedEvents(i + 1).eventType != eventB) {
-                  isSatisfied = false // If the next event is not B, it's a violation
-                }
-              }
-
-              // After loop, if there was a B not next to an A, it's a violation
-              if (isSatisfied) Some(PairConstraintRow("chain-response", eventA, eventB, traceId))
-              else Some(PairConstraintRow("not-chain-succession", eventA, eventB, traceId))
-          }
-
-        val chainPrecedence: Seq[PairConstraintRow] =
-          alternatePrecedence.flatMap {
-            case PairConstraintRow(_, eventA, eventB, traceId) =>
-              var isSatisfied = true
-
-              for ((e, i) <- orderedEvents.zipWithIndex if isSatisfied && e.eventType == eventB) {
-                if (i - 1 < 0 || orderedEvents(i - 1).eventType != eventA)
-                  isSatisfied = false // If the previous event is not A, it's a violation
-              }
-
-              // After loop, if there was a A not previous to a B, it's a violation
-              if (isSatisfied) Some(PairConstraintRow("chain-precedence", eventA, eventB, traceId))
-              else None
-          }
-
-        val chainSuccession: Seq[PairConstraintRow] =
-          (chainResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect chainPrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
-            .map { case (eventA, eventB, trace) => PairConstraintRow("chain-succession", eventA, eventB, trace) }.toSeq
-
-        response ++ precedence ++ succession ++
-          alternateResponse ++ alternatePrecedence ++ alternateSuccession ++
-          chainResponse ++ chainPrecedence ++ chainSuccession
-      }
-      .toDS()
-
-
-    // Find negative constraints
-    val notSuccession: Dataset[PairConstraintRow] = newConstraints.rdd
-      .filter(_.rule == "response")
-      .groupBy(x => (x.eventA, x.eventB))
-      .map(x => (x._1._1, x._1._2, x._2.map(_.trace).toSet))
-      .map(x => (x._1, x._2, bTraceIds.value diff x._3))
-      .flatMap(x => x._3.map(y => PairConstraintRow("not-succession", x._1, x._2, y)))
-      .toDS()
-
-
-    // Write updated constraints back to s3
-    val updatedConstraints: Dataset[PairConstraintRow] = newConstraints.union(notSuccession)
-    updatedConstraints.count()
-    updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
-
-    // Group by rule, eventA, eventB and collect traces
-    val pairConstraints: Dataset[PairConstraint] = newConstraints
-      .union(notSuccession)
-      .groupBy("rule", "eventA", "eventB")
-      .agg(collect_list($"trace").as("traces"))
-      .as[PairConstraint]
-    pairConstraints.persist(StorageLevel.MEMORY_AND_DISK)
-
-    // compute constraints using support and branching and collect them
-    var constraints: Array[(String, String, Array[String])] = pairConstraints.collect().flatMap { x =>
-      val support = x.traces.toSet.size.toDouble / bTraceIds.value.size
-      if (support > supportThreshold)
-        Some((x.rule, x.eventA + "|" + x.eventB, x.traces.distinct))
-      else
-        None
-    }
-
-    pairConstraints.unpersist()
+  private def extract_all_unorder_constraints(constraints: Dataset[PairConstraint], support: Double, total_traces: Long): Array[PairConstraint] = {
     constraints
+      .rdd
+      .flatMap(x => {
+        val l = ListBuffer[PairConstraint]()
+        if (x.rule == "co-existence") {
+          l += PairConstraint("exclusive choice", x.eventA, x.eventB, total_traces - x.occurrences)
+        }
+        l += x
+        l.toList
+      }).filter(x => (x.occurrences / total_traces) >= support)
+      .map(x => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences / total_traces))
+      .collect()
+
+
   }
+
+  private def extract_all_ordered_constraints(constraints: Dataset[PairConstraint],
+                                              bUnique_traces_to_event_types: Broadcast[scala.collection.Map[String, Long]],
+                                              activity_matrix: RDD[(String, String)],
+                                              support: Double): Array[PairConstraint] = {
+
+
+    val not_chain_succession = activity_matrix
+      .filter(x => x._1 != x._2)
+      .keyBy(x => {
+        (x._1, x._2)
+      }).subtractByKey(
+        constraints
+          .filter(_.rule.contains("chain"))
+          .rdd
+          .map(x => {
+            (x.eventA, x.eventB)
+          })
+          .distinct()
+          .keyBy(x => (x._1, x._2)))
+      .map(x => PairConstraint("not-chain-succession", x._2._1, x._2._2, 1.0))
+      .collect()
+
+    val remaining = constraints.rdd.flatMap(c => {
+        val l = ListBuffer[PairConstraint]()
+        val sup = if (c.rule.contains("response")) {
+          c.occurrences / bUnique_traces_to_event_types.value(c.eventA)
+        } else {
+          c.occurrences / bUnique_traces_to_event_types.value(c.eventB)
+        }
+        l += PairConstraint(c.rule, c.eventA, c.eventB, sup) // add the support to the constraint
+        if (c.rule.contains("chain")) {
+          l += PairConstraint("chain-succession", c.eventA, c.eventB, sup)
+          l += PairConstraint("not-chain-succession", c.eventA, c.eventB, 1 - sup)
+        } else if (c.rule.contains("alternate")) {
+          l += PairConstraint("alternate-succession", c.eventA, c.eventB, sup)
+        } else {
+          l += PairConstraint("succession", c.eventA, c.eventB, sup)
+          l += PairConstraint("not-succession", c.eventA, c.eventB, 1 - sup)
+        }
+        l.toList
+      })
+      .keyBy(x => (x.rule, x.eventA, x.eventB))
+      .reduceByKey((x, y) => PairConstraint(x.rule, x.eventA, x.eventB, x.occurrences * y.occurrences))
+      .map(_._2)
+      .filter(_.occurrences >= support) //calculate the final filtering at the end
+      .collect()
+
+    not_chain_succession ++ remaining
+
+  }
+
 }

@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs._
+import auth.datalab.siesta.StandardStructs._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.{col, collect_list, concat_ws, count, lit, sum}

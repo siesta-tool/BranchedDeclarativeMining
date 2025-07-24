@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Event, MetaData, PairFull}
+import auth.datalab.siesta.StandardStructs.{Event, MetaData, PairFull}
 import org.apache.spark.sql.{Dataset, SaveMode, SparkSession}
 
 class S3Connector {
@@ -96,7 +96,7 @@ class S3Connector {
         val posA = row.getAs[Int]("positionA")
         val posB = row.getAs[Int]("positionB")
         val trace_id = row.getAs[String]("trace_id")
-        Structs.PairFull(eventA, eventB, trace_id, posA, posB)
+        StandardStructs.PairFull(eventA, eventB, trace_id, posA, posB)
       }).toDS()
   }
 

@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{ExactlyConstraint, PairConstraint, PositionConstraint, SourceBranchedPairConstraint, TargetBranchedPairConstraint}
+import auth.datalab.siesta.StandardStructs.{ExactlyConstraint, PairConstraint, PositionConstraint, SourceBranchedPairConstraint, TargetBranchedPairConstraint}
 import org.apache.spark.sql.functions.{collect_set, count, explode, pow}
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 

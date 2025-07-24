@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-object Structs {
+object StandardStructs {
   case class MetaData(var traces: Long, var events: Long, var pairs: Long,
                       lookback: Int,
                       var has_previous_stored: Boolean,
@@ -17,7 +17,8 @@ object Structs {
                     dropFactor: Double = 1.5,
                     filterRare: Boolean = false,
                     filterUnderBound: Boolean = false,
-                    hardRediscovery: Boolean = false)
+                    hardRediscovery: Boolean = false,
+                    quickMining: Boolean = false)
 
   case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)
 
