@@ -140,7 +140,7 @@ object Main {
           /**
            * Position patterns
            */
-          val position = DeclareMining.extractPositionConstraints(
+          val position = StandardMining.extractPositionConstraints(
             logName = metaData.log_name,
             affectedEvents = affectedEvents,
             bEvolvedTracesBounds = bEvolvedTracesBounds,
@@ -154,7 +154,7 @@ object Main {
             hardRediscover = hardRediscover)
 
           /** Existence patterns */
-          val existence = DeclareMining.extractExistenceConstraints(
+          val existence = StandardMining.extractExistenceConstraints(
             logName = metaData.log_name,
             affectedEvents = affectedEvents,
             supportThreshold = support,
@@ -167,7 +167,7 @@ object Main {
             filterUnderBound = filterUnderBound)
 
           /** Unordered patterns */
-          val unorder = DeclareMining.extractUnordered(
+          val unorder = StandardMining.extractUnordered(
             logName = metaData.log_name,
             bEvolvedTracesBounds = bEvolvedTracesBounds,
             affectedEvents = affectedEvents,
@@ -183,7 +183,7 @@ object Main {
             filterUnderBound = filterUnderBound)
 
           /** Ordered patterns */
-          val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
+          val ordered = StandardMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
             bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
             branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 

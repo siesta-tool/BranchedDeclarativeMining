@@ -9,7 +9,7 @@ import org.apache.spark.storage.StorageLevel
 
 import scala.collection.mutable.ListBuffer
 
-object DeclareMining {
+object StandardMining {
 
   /**
    * Extracts position constraints from the new events and merges them with the existing ones.
