@@ -17,4 +17,6 @@ evaluation/venv/*
 
 sbt.json
 
+.bsp/
+
 !evaluation/incremental_evaluation/results.txt
