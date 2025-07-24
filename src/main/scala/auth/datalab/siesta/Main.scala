@@ -20,7 +20,7 @@ object Main {
       import builder._
       OParser.sequence(
         programName("SIESTA CBDeclare Constraints Mining"),
-        head("SIESTA CBD Module", "1.0"),
+        head("SIESTA CBDecalre Module", "1.0"),
 
         opt[String]('l', "logname")
           .required()
