@@ -10,13 +10,13 @@ project/project*
 
 *.iml
 evaluation/venv/*
-evaluation/bpm2025/*
 *.withTimestamp
 *.txt
 *.jar
 *.xes
 
-out/
-output/
-!input/test.xes
+sbt.json
+
+.bsp/
+
 !evaluation/incremental_evaluation/results.txt
