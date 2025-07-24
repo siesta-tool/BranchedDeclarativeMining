@@ -49,7 +49,9 @@ if __name__ == "__main__":
     siesta_server = "http://localhost:8090"
     logname = "test_inc"
     support = 0
-    incremental_file = '../output_first.txt'
+    folder_path = '../output'
+    files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
+    incremental_file = max(files, key=os.path.getmtime)
     print(os.getcwd())
 
     # submit  query  to siesta to get all declare constraints

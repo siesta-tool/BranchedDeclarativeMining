@@ -21,7 +21,7 @@ class S3Connector {
     this.logname = logname
     lazy val spark = SparkSession.builder()
       .appName("Declare extraction")
-            .master("local[*]")
+      .master("local[*]")
       .getOrCreate()
 
     val s3accessKeyAws = Utilities.readEnvVariable("s3accessKeyAws")
@@ -81,7 +81,7 @@ class S3Connector {
     import spark.implicits._
     spark.read.parquet(this.seq_table)
       .map(x => {
-        Event(trace_id = x.getAs[String]("trace_id"), ts = x.getAs[String]("timestamp"), event_type = x.getAs[String]("event_type"),
+        Event(trace = x.getAs[String]("trace_id"), ts = x.getAs[String]("timestamp"), eventType = x.getAs[String]("event_type"),
           pos = x.getAs[Int]("position"))
       })
   }
@@ -98,6 +98,13 @@ class S3Connector {
         val trace_id = row.getAs[String]("trace_id")
         Structs.PairFull(eventA, eventB, trace_id, posA, posB)
       }).toDS()
+  }
+
+  def get_single_table(): Dataset[(String, String)] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    spark.read.parquet(this.single_table)
+      .map(x => (x.getAs[String]("event_type"), x.getAs("trace_id")))
   }
 
 
