@@ -57,7 +57,11 @@ object Main {
 
         opt[Boolean]('h', "hardRediscover")
           .action((x, c) => c.copy(hardRediscovery = x))
-          .text("Hard rediscovery, default is false")
+          .text("Hard rediscovery, default is false"),
+
+        opt[Boolean]('q', "quickMining")
+          .action((x, c) => c.copy(quickMining = x))
+          .text("Quick mining, default is false"),
       )
     }
 
@@ -74,6 +78,7 @@ object Main {
         println(s"Filter out Rare events: ${config.filterRare}")
         println(s"Filter out under-bound templates: ${config.filterUnderBound}")
         println(s"Find all constraints from beginning: ${config.hardRediscovery}")
+        println(s"Quick mining: ${config.quickMining}")
 
         val support = config.support
         var branchingPolicy = config.branchingPolicy
@@ -83,6 +88,7 @@ object Main {
         val dropFactor = config.dropFactor
         val filterUnderBound = if (branchingBound > 0) config.filterUnderBound else false
         val hardRediscover = config.hardRediscovery
+        val quickMining = config.quickMining
         val metaData = s3Connector.get_metadata()
 
         val spark = SparkSession.builder().getOrCreate()
@@ -137,74 +143,141 @@ object Main {
           val activityMatrix = allEventOccurrences.cartesian(allEventOccurrences)
           activityMatrix.persist(StorageLevel.MEMORY_AND_DISK)
 
-          /**
-           * Position patterns
-           */
-          val position = DeclareMining.extractPositionConstraints(
-            logName = metaData.log_name,
-            affectedEvents = affectedEvents,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
-            supportThreshold = support,
-            totalTraces = metaData.traces,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound,
-            hardRediscover = hardRediscover)
+          if (quickMining) {
+            /** Position patterns */
+            val position = SupportedDeclareMining.extractPositionConstraints(
+              logName = metaData.log_name,
+              affectedEvents = affectedEvents,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
+              supportThreshold = support,
+              totalTraces = metaData.traces,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound,
+              hardRediscover = hardRediscover)
 
-          /** Existence patterns */
-          val existence = DeclareMining.extractExistenceConstraints(
-            logName = metaData.log_name,
-            affectedEvents = affectedEvents,
-            supportThreshold = support,
-            totalTraces = metaData.traces,
-            bTraceIds = bTraceIds,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound)
+            /** Existence patterns */
+            val existence = SupportedDeclareMining.extractExistenceConstraints(
+              logName = metaData.log_name,
+              affectedEvents = affectedEvents,
+              supportThreshold = support,
+              totalTraces = metaData.traces,
+              bTraceIds = bTraceIds,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound)
 
-          /** Unordered patterns */
-          val unorder = DeclareMining.extractUnordered(
-            logName = metaData.log_name,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
-            affectedEvents = affectedEvents,
-            bTraceIds = bTraceIds,
-            activityMatrix = activityMatrix,
-            allEventOccurrences = allEventOccurrences,
-            supportThreshold = support,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            branchingType = branchingType,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound)
+            /** Unordered patterns */
+            val unorder = SupportedDeclareMining.extractUnordered(
+              logName = metaData.log_name,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
+              affectedEvents = affectedEvents,
+              bTraceIds = bTraceIds,
+              activityMatrix = activityMatrix,
+              allEventOccurrences = allEventOccurrences,
+              supportThreshold = support,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              branchingType = branchingType,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound)
 
-          /** Ordered patterns */
-          val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
-            bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
-            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
+            /** Ordered patterns */
+            val ordered = SupportedDeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
+              bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
+              branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
 
-          val l = ListBuffer[String]()
-          events.unpersist()
-          activityMatrix.unpersist()
-          affectedEvents.unpersist()
+            val l = ListBuffer[String]()
+            events.unpersist()
+            activityMatrix.unpersist()
+            affectedEvents.unpersist()
 
-          ordered.union(position).union(existence).union(unorder).foreach(x => {
-            val support = f"${x._3.length.toDouble / traceIds.size}%.3f"
-            l += s"${x._1}|${x._2}|${x._3.mkString(",")}|$support\n"
-          })
-          println("Constraints mined: " + l.size)
+            ordered.union(position).union(existence).union(unorder).foreach(x => {
+              l += s"${x._1}|${x._2}|${x._3}\n"
+            })
+            println("Constraints mined: " + l.size)
 
-          branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
+            branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
 
-          val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
-          val writer = new BufferedWriter(new FileWriter(file))
-          l.toList.sorted.foreach(writer.write)
-          writer.close()
+            val file = "constraints_" + config.logName + "_s" + support.toString + ".txt"
+            val writer = new BufferedWriter(new FileWriter(file))
+            l.toList.sorted.foreach(writer.write)
+            writer.close()
+
+          } else {
+            /** Position patterns */
+            val position = DeclareMining.extractPositionConstraints(
+              logName = metaData.log_name,
+              affectedEvents = affectedEvents,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
+              supportThreshold = support,
+              totalTraces = metaData.traces,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound,
+              hardRediscover = hardRediscover)
+
+            /** Existence patterns */
+            val existence = DeclareMining.extractExistenceConstraints(
+              logName = metaData.log_name,
+              affectedEvents = affectedEvents,
+              supportThreshold = support,
+              totalTraces = metaData.traces,
+              bTraceIds = bTraceIds,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound)
+
+            /** Unordered patterns */
+            val unorder = DeclareMining.extractUnordered(
+              logName = metaData.log_name,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
+              affectedEvents = affectedEvents,
+              bTraceIds = bTraceIds,
+              activityMatrix = activityMatrix,
+              allEventOccurrences = allEventOccurrences,
+              supportThreshold = support,
+              branchingPolicy = branchingPolicy,
+              branchingBound = branchingBound,
+              branchingType = branchingType,
+              filterRare = filterRare,
+              dropFactor = dropFactor,
+              filterUnderBound = filterUnderBound)
+
+            /** Ordered patterns */
+            val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
+              bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
+              branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
+
+
+            val l = ListBuffer[String]()
+            events.unpersist()
+            activityMatrix.unpersist()
+            affectedEvents.unpersist()
+
+            ordered.union(position).union(existence).union(unorder).foreach(x => {
+              val support = f"${x._3.length.toDouble / traceIds.size}%.3f"
+              l += s"${x._1}|${x._2}|${x._3.mkString(",")}|$support\n"
+            })
+            println("Constraints mined: " + l.size)
+
+            branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
+
+            val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
+            val writer = new BufferedWriter(new FileWriter(file))
+            l.toList.sorted.foreach(writer.write)
+            writer.close()
+          }
 
           if (!newEvents.isEmpty) {
             metaData.last_declare_mined = newEvents.rdd
