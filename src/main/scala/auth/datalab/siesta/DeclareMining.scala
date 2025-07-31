@@ -52,9 +52,7 @@ object DeclareMining {
     // Filter out oldConstraints to exclude existence measurements for the traces
     // that have evolved and keep only the unrelated ones
     val fixedOldConstraints = oldConstraints
-      .join(affectedEvents.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
-      .select("rule", "eventType", "trace")
-      .as[PositionConstraintRow]
+      .filter(x => x.rule == "first" || bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == -1)
 
     // Find the first and last position constraints for the new events
     val newEventsConstraints: Dataset[PositionConstraintRow] = affectedEvents.map(x => {
@@ -68,11 +66,6 @@ object DeclareMining {
     // Merge the new constraints with the fixed old ones
     val constraints = fixedOldConstraints
       .union(newEventsConstraints)
-      .rdd
-      .keyBy(x => (x.rule, x.eventType))
-      .map(_._2)
-      .toDS()
-
 
     constraints.count()
     constraints.persist(StorageLevel.MEMORY_AND_DISK)
@@ -80,6 +73,7 @@ object DeclareMining {
       .write
       .mode(SaveMode.Overwrite)
       .parquet(positionConstraintsPath)
+    constraints.unpersist()
 
     val response = constraints
       .rdd
@@ -105,7 +99,7 @@ object DeclareMining {
       BranchedDeclare.extractBranchedSingleConstraints(response, totalTraces, supportThreshold, branchingPolicy,
         branchingBound, dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
     }
-    constraints.unpersist()
+    response.unpersist()
     result
   }
 
