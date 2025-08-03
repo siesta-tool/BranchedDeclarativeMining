@@ -105,6 +105,7 @@ object DeclareMining {
 
   def extractExistenceConstraints(logName: String,
                                   affectedEvents: Dataset[Event],
+                                  bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
                                   supportThreshold: Double,
                                   totalTraces: Long,
                                   bTraceIds: Broadcast[Set[String]],
@@ -136,11 +137,14 @@ object DeclareMining {
 
     // Filter out oldConstraints to exclude existence measurements for the traces
     // that have evolved and keep only the unrelated ones
-    val filteredPreviously = oldConstraints
-      .join(newConstraints.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
+    val finalConstraints = oldConstraints
+      .filter(x => bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == -1)
+      .union(newConstraints)
+//      .join(newConstraints.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
+//      .select($"rule", $"eventType", $"instances", $"trace")
       .as[ExactlyConstraintRow]
 
-    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"eventType", $"instances", $"trace").as[ExactlyConstraintRow])
+//    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"eventType", $"instances", $"trace").as[ExactlyConstraintRow])
 
     finalConstraints.count()
     finalConstraints.persist(StorageLevel.MEMORY_AND_DISK)
@@ -178,12 +182,12 @@ object DeclareMining {
     result
   }
 
-  def extractAllExistenceConstraints(existences: Dataset[ExactlyConstraint],
+  def extractAllExistenceConstraints(exactly: Dataset[ExactlyConstraint],
                                      bTraceIds: Broadcast[Set[String]]): Array[PairConstraint] = {
-    existences
+    exactly
       .rdd
       .groupBy(_.eventType)
-      .flatMap { case (event_type, activities) =>
+      .flatMap { case (eventType, activities) =>
         val l = ListBuffer[PairConstraint]()
 
         val sortedActivities = activities.toList.sortBy(_.instances)
@@ -193,25 +197,25 @@ object DeclareMining {
         sortedActivities.foreach { activity =>
           // Exactly constraint
           l += PairConstraint("exactly",
-            event_type,
+            eventType,
             activity.instances.toString,
             activity.traces)
 
           // Existence constraint
           l += PairConstraint("existence",
-            event_type,
+            eventType,
             activity.instances.toString,
             (bTraceIds.value diff cumulativeExistence).toArray)
 
           cumulativeExistence ++= activity.traces
 
           // Absence constraint
-          l += PairConstraint("absence", event_type, activity.instances.toString, cumulativeAbsence.toArray)
+          l += PairConstraint("absence", eventType, activity.instances.toString, cumulativeAbsence.toArray)
 
           cumulativeAbsence ++= activity.traces
         }
 
-        l += PairConstraint("absence", event_type, (sortedActivities.last.instances + 1).toString, bTraceIds.value.toArray)
+        l += PairConstraint("absence", eventType, (sortedActivities.last.instances + 1).toString, bTraceIds.value.toArray)
         l.toList
       }.collect()
   }

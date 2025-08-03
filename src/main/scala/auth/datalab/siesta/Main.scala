@@ -229,6 +229,7 @@ object Main {
             val existence = DeclareMining.extractExistenceConstraints(
               logName = metaData.log_name,
               affectedEvents = affectedEvents,
+              bEvolvedTracesBounds = bEvolvedTracesBounds,
               supportThreshold = support,
               totalTraces = metaData.traces,
               bTraceIds = bTraceIds,
