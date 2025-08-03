@@ -62,7 +62,7 @@ object LooseDeclareMining {
           response.flatMap {
             case PairConstraintRow(_, eventA, eventB, traceId) =>
               var aSeen = false
-              var isValid = true
+              var isValid = false
 
               for (e <- orderedEvents) {
                 if (e.eventType == eventA) {
@@ -71,9 +71,8 @@ object LooseDeclareMining {
                 else if (e.eventType == eventB && aSeen) {
                   isValid = true // A occurred before B
                   aSeen = false // Reset A seen state after B
-                } else
-                if (e.eventType == eventB && !aSeen) {
-                  isValid = false // `B` occurred before any `A`
+                } else if (e.eventType == eventB && !aSeen) {
+//                  isValid = false // `B` occurred before any `A`
                   aSeen = false // Reset A seen state
                 }
               }
@@ -91,15 +90,17 @@ object LooseDeclareMining {
           response.flatMap {
             case PairConstraintRow(_, eventA, eventB, traceId) =>
               var aOpen = false // whether an A is waiting for a B
-              var isSatisfied = true
+              var isSatisfied = false
 
               for (e <- orderedEvents if (e.eventType == eventA || e.eventType == eventB)) {
                 e.eventType match {
                   case `eventA` =>
-                    if (aOpen) isSatisfied = false // Previous A didn't get a B before this A
-                    else aOpen = true // Start waiting for a B
+                    aOpen = true
                   case `eventB` =>
-                    if (aOpen) aOpen = false // B satisfied the last A
+                    if (aOpen) {
+                      isSatisfied = true
+                    }// B satisfied the last A
+                    aOpen = false // B satisfied the open A
                   // else ignore this B (not between two As)
                 }
               }
@@ -113,15 +114,17 @@ object LooseDeclareMining {
           precedence.flatMap {
             case PairConstraintRow(_, eventA, eventB, traceId) =>
               var aSeen = false // waiting for a B to close the A
-              var isSatisfied = true
+              var isSatisfied = false
 
               for (e <- orderedEvents if (e.eventType == eventA || e.eventType == eventB)) {
                 e.eventType match {
                   case `eventA` =>
                     aSeen = true // an A opens a precedence "slot" waiting for a B
                   case `eventB` =>
-                    if (aSeen) aSeen = false // B closes the open A slot
-                    else isSatisfied = false // B occurred without preceding A
+                    if (aSeen) {
+                      isSatisfied = true
+                    } // B closes the open A slot
+                    aSeen = false
                 }
               }
 
