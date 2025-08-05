@@ -465,8 +465,7 @@ object DeclareMining {
           if (bounds._1 > 0) bounds = (bounds._1 - 1, bounds._2)
           val evolvedTracePart = orderedEvents.filter(x => x.pos >= bounds._1 && x.pos <= bounds._2)
 
-          val oldEventTypes = bOldConstraints.value.filter(x => x.rule == "response" && x.trace == traceId)
-            .map(_.eventA)
+          val oldEventTypes = orderedEvents.filter(x => x.pos <= bounds._1).map(_.eventType).toSet
           val evolvedEventTypes = evolvedTracePart.map(_.eventType).toSet
 
           // Response relations are extracted from the evolved part of the trace
@@ -505,10 +504,8 @@ object DeclareMining {
           val validOldPrecedences = bOldConstraints.value
             .filter(x => x.rule == "precedence" && x.trace == traceId)
             .map { case PairConstraintRow(_, eventA, eventB, _) =>
-              if (!evolvedEventTypes.contains(eventB))
+              if (!evolvedEventTypes.contains(eventB) || !evolvedEventTypes.contains(eventA))
                 Some(PairConstraintRow("precedence", eventA, eventB, traceId))
-//              else if (!evolvedEventTypes.contains(eventA))
-//                None // If eventA is not in the evolved part, we cannot have a precedence relation
 //              else if (newPrecedences.exists(p => p.eventA == eventA && p.eventB == eventB && p.trace == traceId))
 //                None // newPrecedences will determine if the precedence relation is valid in the evolved part
               else
@@ -587,7 +584,6 @@ object DeclareMining {
             chainResponse ++ chainPrecedence ++ chainSuccession
       }.toDS()
 
-
     // Find negative constraints
     val notSuccession: Dataset[PairConstraintRow] = newConstraints.rdd
       .filter(_.rule == "response")
@@ -606,7 +602,8 @@ object DeclareMining {
       .union(unchangedOldConstraints)
       .union(notSuccession)
     updatedConstraints.count()
-    updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
+    updatedConstraints.persist(StorageLevel.MEMORY_AND_DISK)
+//    updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
 
     // Group by rule, eventA, eventB and collect traces
     val pairConstraints: Dataset[PairConstraint] = updatedConstraints
@@ -615,6 +612,7 @@ object DeclareMining {
       .agg(collect_list($"trace").as("traces"))
       .as[PairConstraint]
     pairConstraints.persist(StorageLevel.MEMORY_AND_DISK)
+    updatedConstraints.unpersist()
 
     // compute constraints using support and branching and collect them
     var constraints: Array[(String, String, Array[String])] = pairConstraints.collect().flatMap { x =>
