@@ -258,7 +258,7 @@ object Main {
 
             /** Ordered patterns */
             val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
-              bTraceIds, activityMatrix, metaData.traces, support, branchingPolicy, branchingType,
+              bTraceIds, metaData.traces, support, branchingPolicy, branchingType,
               branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
 
