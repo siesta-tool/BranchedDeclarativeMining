@@ -59,6 +59,7 @@ class S3Connector {
     } catch {
       case _: org.apache.spark.sql.AnalysisException => null
     }
+
     //calculate new metadata object
     val metaData = if (metaDataObj == null) {
       return null

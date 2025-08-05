@@ -281,11 +281,11 @@ object Main {
             writer.close()
           }
 
-          if (!newEvents.isEmpty) {
-            metaData.last_declare_mined = newEvents.rdd
-              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
-            s3Connector.write_metadata(metaData)
-          }
+//          if (!newEvents.isEmpty) {
+//            metaData.last_declare_mined = newEvents.rdd
+//              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
+//            s3Connector.write_metadata(metaData)
+//          }
         })
       case _ =>
         throw new IllegalArgumentException("Wrong configuration!")
