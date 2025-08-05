@@ -342,7 +342,6 @@ object DeclareMining {
   def extractOrdered(logName: String, affectedEvents: Dataset[Event],
                      bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
                      bTraceIds: Broadcast[Set[String]],
-                     activityMatrix: RDD[((String, Set[String]), (String, Set[String]))],
                      totalTraces: Long,
                      supportThreshold: Double,
                      branchingPolicy: String,
@@ -357,7 +356,6 @@ object DeclareMining {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
-    //    val s3Connector = new S3Connector()
 
     // get previous data if exist
     val orderPath = s"""s3a://siesta/$logName/declare/order.parquet/"""
@@ -425,6 +423,38 @@ object DeclareMining {
           else None
       }
     }
+
+    def extractChainResponse(
+                              traceId: String,
+                              stats: TraceStats,
+                              alternateResponse: Seq[PairConstraintRow]
+                            ): Seq[PairConstraintRow] =
+      alternateResponse.map { case PairConstraintRow(_, a, b, _) =>
+        val countA = stats.totalCount.getOrElse(a, 0)
+        val adjAB = stats.adjacentCount.getOrElse((a, b), 0)
+        val isChainResp = countA > 0 && adjAB == countA
+
+        if (isChainResp)
+          PairConstraintRow("chain-response", a, b, traceId)
+        else
+          PairConstraintRow("not-chain-succession", a, b, traceId)
+      }
+
+    def extractChainPrecedence(
+                                traceId: String,
+                                stats: TraceStats,
+                                alternatePrecedence: Seq[PairConstraintRow]
+                              ): Seq[PairConstraintRow] =
+      alternatePrecedence.flatMap { case PairConstraintRow(_, a, b, _) =>
+        val countB = stats.totalCount.getOrElse(b, 0)
+        val adjAB = stats.adjacentCount.getOrElse((a, b), 0)
+        // every B must have an A immediately before it:
+        val isChainPrec  = countB > 0 && adjAB == countB
+
+        if (isChainPrec) Some(PairConstraintRow("chain-precedence", a, b, traceId))
+        else None
+      }
+
 
     val newConstraints = evolvedTraces
       .flatMap {
@@ -543,36 +573,10 @@ object DeclareMining {
             (alternateResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect alternatePrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
               .map { case (eventA, eventB, trace) => PairConstraintRow("alternate-succession", eventA, eventB, trace) }.toSeq
 
-          val chainResponse: Seq[PairConstraintRow] =
-            alternateResponse.flatMap {
-              case PairConstraintRow(_, eventA, eventB, traceId) =>
-                var isSatisfied = true
+          val stats = computeTraceStats(orderedEvents)
+          val chainResponse = extractChainResponse(traceId, stats, alternateResponse)
+          val chainPrecedence = extractChainPrecedence(traceId, stats, alternatePrecedence)
 
-                for ((e, i) <- orderedEvents.zipWithIndex if isSatisfied && e.eventType == eventA) {
-                  if (i + 1 >= orderedEvents.length || orderedEvents(i + 1).eventType != eventB) {
-                    isSatisfied = false // If the next event is not B, it's a violation
-                  }
-                }
-
-                // After loop, if there was a B not next to an A, it's a violation
-                if (isSatisfied) Some(PairConstraintRow("chain-response", eventA, eventB, traceId))
-                else Some(PairConstraintRow("not-chain-succession", eventA, eventB, traceId))
-            }
-
-          val chainPrecedence: Seq[PairConstraintRow] =
-            alternatePrecedence.flatMap {
-              case PairConstraintRow(_, eventA, eventB, traceId) =>
-                var isSatisfied = true
-
-                for ((e, i) <- orderedEvents.zipWithIndex if isSatisfied && e.eventType == eventB) {
-                  if (i - 1 < 0 || orderedEvents(i - 1).eventType != eventA)
-                    isSatisfied = false // If the previous event is not A, it's a violation
-                }
-
-                // After loop, if there was a A not previous to a B, it's a violation
-                if (isSatisfied) Some(PairConstraintRow("chain-precedence", eventA, eventB, traceId))
-                else None
-            }
 
           val chainSuccession: Seq[PairConstraintRow] =
             (chainResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect chainPrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
@@ -598,7 +602,9 @@ object DeclareMining {
       .as[PairConstraintRow]
 
     // Write updated constraints back to s3
-    val updatedConstraints: Dataset[PairConstraintRow] = newConstraints.union(unchangedOldConstraints)
+    val updatedConstraints: Dataset[PairConstraintRow] = newConstraints
+      .union(unchangedOldConstraints)
+      .union(notSuccession)
     updatedConstraints.count()
     updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
 
@@ -632,4 +638,25 @@ object DeclareMining {
     pairConstraints.unpersist()
     constraints
   }
+
+  private def computeTraceStats(orderedEvents: Seq[Event]): TraceStats = {
+    // total occurrences of each eventType
+    val totalCount = orderedEvents.foldLeft(Map.empty[String, Int].withDefaultValue(0)) {
+      case (counts, e) => counts.updated(e.eventType, counts(e.eventType) + 1)
+    }
+
+    // adjacent (x,y) counts
+    val adjacentCount = orderedEvents
+      .map(_.eventType)
+      .sliding(2)
+      .foldLeft(Map.empty[(String, String), Int].withDefaultValue(0)) {
+        case (counts, Seq(a, b)) =>
+          counts.updated((a, b), counts((a, b)) + 1)
+        case (counts, _) =>
+          counts
+      }
+
+    TraceStats(totalCount, adjacentCount)
+  }
+
 }
