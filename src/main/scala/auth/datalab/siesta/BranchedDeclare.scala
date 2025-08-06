@@ -1,8 +1,10 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{ExactlyConstraint, PairConstraint, PositionConstraint, SourceBranchedPairConstraint, TargetBranchedPairConstraint}
+import auth.datalab.siesta.Structs.{ExactlyConstraint, FullBranchedPairConstraint, PairConstraint, PositionConstraint, SourceBranchedPairConstraint, TargetBranchedPairConstraint}
 import org.apache.spark.sql.functions.{collect_set, count, explode, pow}
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+
+import scala.collection.mutable.ListBuffer
 
 
 
@@ -15,7 +17,7 @@ object BranchedDeclare {
                                        branchingBound: Int = 2,
                                        dropFactor: Double = 2.5,
                                        filterUnderBound: Boolean = false,
-                                       filterRare: Boolean = false): Array[(String, String, Double)] = {
+                                       filterRare: Boolean = false): Array[(String, String, Array[String])] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -44,8 +46,8 @@ object BranchedDeclare {
       }
       val events = result.flatMap(_._1)   // Extract event names
       val traces = result.flatMap(_._2)   // Extract associated trace sets
-      (rule, events.toArray, traces.toArray.length.toDouble / totalTraces)
-    }.filter(_._3 > support)
+      (rule, events.toArray, traces.toArray)
+    }.filter(_._3.length.toDouble  > support)
 
     if (filterUnderBound)
       result.filter(_._2.length == branchingBound).map(x => (x._1, x._2.mkString(","), x._3)).collect()
@@ -66,9 +68,11 @@ object BranchedDeclare {
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
         filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
     else if (branchingType == "SOURCE")
-
         getSourceBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
         filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
+    else if (branchingType == "FULL") {
+      FullBranching.fullmining(constraints)
+    }
     else
       throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
   }
@@ -217,6 +221,120 @@ object BranchedDeclare {
     if (filterBounded)
       result = result.filter(_.sources.length == branchingBound)
     result.map(x=> (x.rule, x.sources.mkString(",") + "|" + x.target, x.traces)).collect()
+  }
+
+  private def getFullyBranchedConstraints(constraints: Dataset[PairConstraint],
+                                          totalTraces: Long,
+                                          threshold: Double = 0,
+                                          branchingBound: Int = 2,
+                                          policy: String = "OR",
+                                          dropFactor: Double = 2.5,
+                                          filterBounded: Boolean = false,
+                                          filterRare: Boolean = false,
+                                          printNum: Boolean = false): Array[(String, String, Array[String])] = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    val pairConstraintCounts: DataFrame = explodePairConstraints(constraints)
+
+    val pairConstraints = pairConstraintCounts.as[(String, String, String, Seq[String])]
+
+    pairConstraints.rdd
+      .groupBy(_._1)
+      .flatMap { case (rule, singleConstraints) =>
+        // For each source event, we find its frequency in the single constraints list
+        val sourceEventCounts = singleConstraints.map(c => (c._2, c._4.toSet))
+          .groupBy(_._1).mapValues(_.map(_._2).reduce(_ union _))
+        val targetEventCounts = singleConstraints.map(c => (c._3, c._4.toSet))
+          .groupBy(_._1).mapValues(_.map(_._2).reduce(_ union _))
+
+//        var result: ListBuffer[(String, Set[String], Set[String], Set[String])] = ListBuffer.empty
+
+        // Foreach single constraint we need to decide which event set will be expanded by one (source or target)
+        singleConstraints.map { case (rule, sourceEvent, targetEvent, traces) =>
+          // For each source event, we find its frequency in the single constraints list
+          // Since our goal is to maximize support while expanding the single constraint, we need to check the policy
+
+          var sourceTraces = sourceEventCounts.getOrElse(sourceEvent, Set.empty[String]) diff traces.toSet
+          var targetTraces = targetEventCounts.getOrElse(targetEvent, Set.empty[String]) diff traces.toSet
+          val targetsToBeAdded: ListBuffer[(String, Set[String])] = ListBuffer.empty
+          val sourcesToBeAdded: ListBuffer[(String, Set[String])] = ListBuffer.empty
+          var currentSupport = traces.toSet ++ (targetsToBeAdded.flatMap(_._2) ++ sourcesToBeAdded.flatMap(_._2)).toSet
+
+          policy match {
+            case "AND" =>
+              // Extend the side of the rule that its event offers more traces in other constraints
+              while (currentSupport.size >= threshold && (sourceTraces.nonEmpty || targetTraces.nonEmpty) &&
+                     (targetsToBeAdded.size <= branchingBound || sourcesToBeAdded.size <= branchingBound)) {
+                if (sourceTraces.size > targetTraces.size) {
+                  targetsToBeAdded += singleConstraints.filter(_._2 == sourceEvent).map(c => (c._3, c._4.toSet intersect currentSupport)).maxBy(_._2.size)
+                  if ((currentSupport ++ targetsToBeAdded.flatMap(_._2)).size >= threshold)
+                    targetTraces ++= targetsToBeAdded.last._2
+                } else {
+                  sourcesToBeAdded += singleConstraints.filter(_._3 == targetEvent).map(c => (c._3, c._4.toSet intersect currentSupport)).maxBy(_._2.size)
+                  if ((currentSupport ++ sourcesToBeAdded.flatMap(_._2)).size >= threshold)
+                    sourceTraces ++= sourcesToBeAdded.last._2
+                }
+                val newSupport = (targetsToBeAdded.flatMap(_._2) ++ sourcesToBeAdded.flatMap(_._2)).toSet
+                currentSupport = if (newSupport.size >= threshold) newSupport else currentSupport
+              }
+
+              FullBranchedPairConstraint(
+                rule = rule,
+                sources = sourcesToBeAdded.map(_._1).toArray,
+                targets = targetsToBeAdded.map(_._1).toArray,
+                traces = currentSupport.toArray
+              )
+            case "OR" =>
+              // Extend the side of the rule that its event offers more traces in other constraints
+              while (currentSupport.size >= threshold && (sourceTraces.nonEmpty || targetTraces.nonEmpty) &&
+                     (targetsToBeAdded.size <= branchingBound || sourcesToBeAdded.size <= branchingBound)) {
+                if (sourceTraces.size > targetTraces.size) {
+                  targetsToBeAdded += singleConstraints.filter(_._2 == sourceEvent).map(c => (c._3, c._4.toSet)).maxBy(_._2.size)
+                  if ((currentSupport ++ targetsToBeAdded.flatMap(_._2)).size >= threshold)
+                    targetTraces ++= targetsToBeAdded.last._2
+                } else {
+                  sourcesToBeAdded += singleConstraints.filter(_._3 == targetEvent).map(c => (c._2, c._4.toSet)).maxBy(_._2.size)
+                  if ((currentSupport ++ sourcesToBeAdded.flatMap(_._2)).size >= threshold)
+                    sourceTraces ++= sourcesToBeAdded.last._2
+                }
+                val newSupport = (targetsToBeAdded.flatMap(_._2) ++ sourcesToBeAdded.flatMap(_._2)).toSet
+                currentSupport = if (newSupport.size >= threshold) newSupport else currentSupport
+              }
+
+              FullBranchedPairConstraint(
+                rule = rule,
+                sources = sourcesToBeAdded.map(_._1).toArray,
+                targets = targetsToBeAdded.map(_._1).toArray,
+                traces = currentSupport.toArray
+              )
+
+            case "XOR" =>
+              // For XOR, we need to ensure that we do not have overlapping traces
+              while (currentSupport.size >= threshold && (sourceTraces.nonEmpty || targetTraces.nonEmpty) &&
+                     (targetsToBeAdded.size <= branchingBound || sourcesToBeAdded.size <= branchingBound)) {
+                if (sourceTraces.size > targetTraces.size) {
+                  targetsToBeAdded += singleConstraints.filter(_._2 == sourceEvent).map(c => (c._3, (c._4.toSet union currentSupport) diff (c._4.toSet intersect  currentSupport))).maxBy(_._2.size)
+                  if ((currentSupport ++ targetsToBeAdded.flatMap(_._2)).size >= threshold)
+                    targetTraces ++= targetsToBeAdded.last._2
+                } else {
+                  sourcesToBeAdded += singleConstraints.filter(_._3 == targetEvent).map(c => (c._3, (c._4.toSet union currentSupport) diff (c._4.toSet intersect  currentSupport))).maxBy(_._2.size)
+                  if ((currentSupport ++ sourcesToBeAdded.flatMap(_._2)).size >= threshold)
+                    sourceTraces ++= sourcesToBeAdded.last._2
+                }
+                val newSupport = (targetsToBeAdded.flatMap(_._2) ++ sourcesToBeAdded.flatMap(_._2)).toSet
+                currentSupport = if (newSupport.size >= threshold) newSupport else currentSupport
+              }
+
+              FullBranchedPairConstraint(
+                rule = rule,
+                sources = sourcesToBeAdded.map(_._1).toArray,
+                targets = targetsToBeAdded.map(_._1).toArray,
+                traces = currentSupport.toArray
+              )
+          }
+        }.filter(_.traces.length > threshold)
+      }.map(x => (x.rule, x.sources.mkString(",") + "|" + x.targets.mkString(","), x.traces)).collect()
   }
 
   //////////////////////////////////////////////////////////////////////
