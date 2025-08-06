@@ -356,7 +356,6 @@ object DeclareMining {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
-
     // get previous data if exist
     val orderPath = s"""s3a://siesta/$logName/declare/order.parquet/"""
 
@@ -603,7 +602,7 @@ object DeclareMining {
       .union(notSuccession)
     updatedConstraints.count()
     updatedConstraints.persist(StorageLevel.MEMORY_AND_DISK)
-//    updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
+    updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
 
     // Group by rule, eventA, eventB and collect traces
     val pairConstraints: Dataset[PairConstraint] = updatedConstraints

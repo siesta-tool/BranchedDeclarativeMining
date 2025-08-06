@@ -35,22 +35,27 @@ object Structs {
   case class PairConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
 
   case class TraceStats( totalCount: Map[String, Int], adjacentCount: Map[(String, String), Int])
-  case class AltState(var open: Boolean = false, var violated: Boolean = false)
-
 
   // Target-branched constraint with a single source and multiple targets
   case class TargetBranchedPairConstraint(
-                                       rule: String,
-                                       source: String,
-                                       targets: Array[String],
-                                       traces: Array[String]
-                                     ) extends Serializable
+   rule: String,
+   source: String,
+   targets: Array[String],
+   traces: Array[String]
+  ) extends Serializable
 
   // Source-branched constraint with multiple sources and a single target
   case class SourceBranchedPairConstraint(
-                                       rule: String,
-                                       sources: Array[String],
-                                       target: String,
-                                       traces: Array[String]
-                                     ) extends Serializable
+   rule: String,
+   sources: Array[String],
+   target: String,
+   traces: Array[String]
+  ) extends Serializable
+
+  case class FullBranchedPairConstraint(
+    rule: String,
+    sources: Array[String],
+    targets: Array[String],
+    traces: Array[String]
+  ) extends Serializable
 }
