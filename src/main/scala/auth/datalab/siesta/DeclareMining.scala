@@ -370,37 +370,33 @@ object DeclareMining {
     val evolvedTraces = affectedEvents.rdd.groupBy(_.trace)
 
     def extractResponseRelations(traceId: String, orderedEvents: Seq[Event]): Seq[PairConstraintRow] = {
-      // Map from event type to list of positions
-      val positionsByEvent = orderedEvents.zipWithIndex
-        .foldLeft(Map.empty[String, List[Int]]) { case (acc, (event, idx)) =>
-          val updatedList = acc.getOrElse(event.eventType, Nil)
-          acc.updated(event.eventType, idx :: updatedList)
-        }
-        .mapValues(_.reverse)
-
-      // Set of valid (a, b) pairs where b occurs after some a
-      val validPairs = collection.mutable.Set.empty[(String, String)]
-
-      // Events seen after current point (while scanning backwards)
+      val n = orderedEvents.length
+      val suffixFutureEvents = Array.fill(n)(Set.empty[String])
       var futureEvents = Set.empty[String]
 
-      // Traverse backwards to populate validPairs
-      for ((event, _) <- orderedEvents.zipWithIndex.reverse) {
-        val a = event.eventType
-        for (b <- futureEvents) {
-          validPairs.add((a, b))
-        }
-        futureEvents += a
+      // Traverse in reverse and populate suffixFutureEvents
+      for (i <- (n - 1) to 0 by -1) {
+        suffixFutureEvents(i) = futureEvents
+        futureEvents += orderedEvents(i).eventType
       }
 
-      // Keep only those (a, b) where every a is followed by some b
-      val results = for {
-        (a, positions) <- positionsByEvent
-        b <- positionsByEvent.keySet if a != b
-        if positions.forall(pos => validPairs.contains((orderedEvents(pos).eventType, b)))
-      } yield PairConstraintRow("response", a, b, traceId)
+      // Get all distinct event types
+      val eventTypes = orderedEvents.map(_.eventType).distinct
+      val results = collection.mutable.ListBuffer.empty[PairConstraintRow]
 
-      results.toSeq
+      for {
+        a <- eventTypes
+        b <- eventTypes
+        aPositions = orderedEvents.zipWithIndex.collect {
+          case (e, idx) if e.eventType == a => idx
+        }
+        if aPositions.nonEmpty
+        if aPositions.forall(idx => suffixFutureEvents(idx).contains(b))
+      } {
+        results += PairConstraintRow("response", a, b, traceId)
+      }
+
+      results
     }
 
     def extractPrecedenceRelations(trace: Seq[Event], responseRelations: Seq[PairConstraintRow]) = {
@@ -462,9 +458,10 @@ object DeclareMining {
           var bounds = bEvolvedTracesBounds.value.getOrElse(traceId, (-1, -1))
           // adjust bounds to include the previously last event in the new response relations
           if (bounds._1 > 0) bounds = (bounds._1 - 1, bounds._2)
+
           val evolvedTracePart = orderedEvents.filter(x => x.pos >= bounds._1 && x.pos <= bounds._2)
 
-          val oldEventTypes = orderedEvents.filter(x => x.pos <= bounds._1).map(_.eventType).toSet
+          val oldEventTypes = if (bounds._1 > 0) orderedEvents.filter(x => x.pos <= bounds._1 - 1).map(_.eventType).toSet else Set.empty[String]
           val evolvedEventTypes = evolvedTracePart.map(_.eventType).toSet
 
           // Response relations are extracted from the evolved part of the trace
