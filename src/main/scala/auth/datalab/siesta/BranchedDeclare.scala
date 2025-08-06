@@ -71,7 +71,9 @@ object BranchedDeclare {
         getSourceBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
         filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
     else if (branchingType == "FULL") {
-      FullBranching.fullmining(constraints)
+//      FullBranching.fullmining(constraints)
+      getFullyBranchedConstraints(constraints, totalTraces, support, branchingBound, policy,  filterRare =
+        filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
     }
     else
       throw new IllegalArgumentException("Only SOURCE | TARGET branching is available!")
@@ -247,8 +249,6 @@ object BranchedDeclare {
           .groupBy(_._1).mapValues(_.map(_._2).reduce(_ union _))
         val targetEventCounts = singleConstraints.map(c => (c._3, c._4.toSet))
           .groupBy(_._1).mapValues(_.map(_._2).reduce(_ union _))
-
-//        var result: ListBuffer[(String, Set[String], Set[String], Set[String])] = ListBuffer.empty
 
         // Foreach single constraint we need to decide which event set will be expanded by one (source or target)
         singleConstraints.map { case (rule, sourceEvent, targetEvent, traces) =>
