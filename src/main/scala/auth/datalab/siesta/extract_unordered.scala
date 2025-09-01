@@ -90,7 +90,7 @@ object extract_unordered {
           }
         })
       metaData.last_declare_mined = last_ts.toString
-      s3Connector.write_metadata(metaData)
+//      s3Connector.write_metadata(metaData)
     }
 
   }
@@ -105,9 +105,9 @@ object extract_unordered {
     //    define table names
     val ex_choice_table = s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
     val co_existence_table = s"""s3a://siesta/${metaData.log_name}/coExistenceTable.parquet/"""
-    
+
     // identify event types that did not exist in the previous batches (only if exist previous batches)
-    val unseen_event_types_till_now=
+    val unseen_event_types_till_now =
       try {
         val existing_event_types = spark.read.parquet(ex_choice_table)
           .select("ev_a", "ev_b")
@@ -118,28 +118,32 @@ object extract_unordered {
           })
           .toSet
         all_event_types.diff(existing_event_types)
-      }catch {
-        case _:org.apache.spark.sql.AnalysisException=> Set[String]()
+      } catch {
+        case _: org.apache.spark.sql.AnalysisException => Set[String]()
       }
-    println("Unseen event types: ",unseen_event_types_till_now)
+    println("Unseen event types: ", unseen_event_types_till_now)
 
     //  extract new ex-choices and co-existances based on the newly appeared distinct
     val new_existence_records: Dataset[ExChoiceRecord] = complete_traces_that_changed
       .groupByKey(x => x.trace_id)
       .flatMapGroups((trace_id, events) => {
         val events_seq = events.toSeq.toList
+        // positions of the new events in the trace, if they do not exist => consider the whole trace
         val positions = bChangedTraces.value.getOrElse(trace_id, (0, events.size - 1))
+        // event types that exist in the new part of the trace
         val new_event_types: Set[String] = events_seq.filter(x => x.pos >= positions._1).map(_.event_type)
           .distinct.toSet
+        // event types that exist in the previous part of the trace
         val prev_event_types: Set[String] = events_seq.filter(x => x.pos < positions._1).map(_.event_type)
           .distinct.toSet
-
+        // event types that doesn't exist in the trace
         val unseen_et: Set[String] = all_event_types
           .filter(et => !prev_event_types.contains(et) && !new_event_types.contains(et))
 
-        val data = new_event_types.diff(prev_event_types).toSeq
+        // Extract the ex-choice and co-existence based on the newly arrived event types
+        val data = new_event_types.diff(prev_event_types).toSeq //event types that appeared in the new part of the trace
           .flatMap(new_activity => {
-            unseen_et
+            unseen_et //joined with the events that didn't appear in this trace to create ex-choice records
               .map(et => {
                 if (new_activity < et) {
                   ExChoiceRecord(trace_id, new_activity, et, 0)
@@ -148,24 +152,22 @@ object extract_unordered {
                 }
               }).toSeq
           })
-
-        val co_existence = new_event_types.diff(prev_event_types).flatMap(x1 => {
-          (new_event_types ++ prev_event_types).filter(x2 => x2 != x1)
-            .map(x2 => {
-              if (x1 < x2) {
-                ExChoiceRecord(trace_id, x1, x2, 2)
-              } else {
-                ExChoiceRecord(trace_id, x2, x1, 2)
-              }
-            })
-        })
-
+        val co_existence = new_event_types.diff(prev_event_types) //event types that appeared in the new part of the trace
+          .flatMap(x1 => { // joined with all the unique event types of this trace to create co-existence records
+            (new_event_types ++ prev_event_types).filter(x2 => x2 != x1)
+              .map(x2 => {
+                if (x1 < x2) {
+                  // set to exChoice records with 2 as found (since both are found) => it is a Co-Existence record,
+                  // but it is required since it is combined with the data
+                  ExChoiceRecord(trace_id, x1, x2, 2)
+                } else {
+                  ExChoiceRecord(trace_id, x2, x1, 2)
+                }
+              })
+          })
         data ++ co_existence
       })
 
-
-//    println("New Existence Records:")
-//    new_existence_records.show()
 
     // Extract previous ex-choice records if they exist
     val prev_ex_choices: Dataset[ExChoiceRecord] = try {
@@ -178,10 +180,11 @@ object extract_unordered {
         spark.createDataset(Seq.empty[ExChoiceRecord])
     }
     // Detect previous ex-choice records that are now completed
-    val ex_choices_to_co_existence = (if (!prev_ex_choices.isEmpty) {
-      prev_ex_choices.rdd
+    val ex_choices_to_co_existence = if (!prev_ex_choices.isEmpty) {
+      prev_ex_choices
+        .rdd
         .groupBy(_.trace_id)
-        .join(complete_traces_that_changed.rdd.groupBy(_.trace_id))
+        .join(complete_traces_that_changed.rdd.groupBy(_.trace_id)) //join with the traces that changed
         .flatMap(x => {
           val positions = bChangedTraces.value.getOrElse(x._1, (0, x._2._2.size - 1))
           val new_event_types: Set[String] = x._2._2.toSeq.filter(x => x.pos >= positions._1).map(_.event_type)
@@ -189,27 +192,30 @@ object extract_unordered {
           x._2._1.toSeq.filter(ex => {
             (ex.found == 0 && new_event_types.contains(ex.ev_b)) || (ex.found == 1 && new_event_types.contains(ex.ev_a))
           })
-        }).toDF()
+        })
+        .toDF()
         .select("ev_a", "ev_b", "found", "trace_id") // reorder columns to match
     } else {
       spark.sparkContext.emptyRDD[ExChoiceRecord].toDF()
         .select("ev_a", "ev_b", "found", "trace_id") // reorder columns to match
-    })
-
+    }
 
 
     // calculate override ex_choice records that correspond to the changed trace_ids -> that should modify only the changed
     // traces and not the entire db
-    val override_ex_choices_temp = if(ex_choices_to_co_existence.isEmpty) {
+    val override_ex_choices_temp = if (ex_choices_to_co_existence.isEmpty) {
       prev_ex_choices
-    }else {
+    } else {
       prev_ex_choices.toDF()
         .except(ex_choices_to_co_existence)
     }
 
     val override_ex_choices = override_ex_choices_temp.toDF()
-      .select("trace_id","Ev_a","ev_b","found")
-      .union(new_existence_records.filter(x => x.found != 2).toDF().select("trace_id","ev_a","ev_b","found"))
+      .select("trace_id", "ev_a", "ev_b", "found")
+      .union(new_existence_records.filter(x => x.found != 2)
+        .toDF()
+        .select("trace_id", "ev_a", "ev_b", "found")
+      )
 
 
     // make the override
@@ -217,32 +223,30 @@ object extract_unordered {
       .as[ExChoiceRecord]
       .write
       .mode(SaveMode.Overwrite)
-      .partitionBy("trace_id")
       .parquet(ex_choice_table)
 
     //      append co-existence records
-    val co_existence_records = ex_choices_to_co_existence
-      .select("trace_id","ev_a","ev_b")
-      .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF().select("trace_id","ev_a","ev_b"))
+    val co_existence_records =
+      ex_choices_to_co_existence
+      .select("trace_id", "ev_a", "ev_b")
+      .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF().select("trace_id", "ev_a", "ev_b"))
       .as[CoExistenceRecord]
       .toDF()
 
-//    co_existence_records.show()
     // append co-existence records
     co_existence_records
       .write
       .mode(SaveMode.Append)
-      .partitionBy("trace_id")
       .parquet(co_existence_table)
 
     // there is a case where new even types appear in this batch and they haven't appeared in the previous batches
     //in that case all unchanged event types should create new ex-choices records for each unique event_type they have
-    
+
     // already identified previous event types
     // get from the seq table all unique event types per trace_id that does not contain the new event type
     val seq_table = s"""s3a://siesta/${metaData.log_name}/seq.parquet/"""
     val additional_ex_choice = spark.read.parquet(seq_table)
-      .select("trace_id","event_type")
+      .select("trace_id", "event_type")
       .distinct()
       .groupBy("trace_id")
       .agg(functions.collect_list("event_type").alias("event_types"))
@@ -263,12 +267,11 @@ object extract_unordered {
           )
         )
       })
-    if(!additional_ex_choice.isEmpty){
+    if (!additional_ex_choice.isEmpty) {
       additional_ex_choice
         .as[ExChoiceRecord]
         .write
         .mode(SaveMode.Append)
-        .partitionBy("trace_id")
         .parquet(ex_choice_table)
     }
 
@@ -353,7 +356,7 @@ object extract_unordered {
       )
     not_co_exist.persist(StorageLevel.MEMORY_AND_DISK)
     not_co_exist.show()
-    
+
   }
 
 }
