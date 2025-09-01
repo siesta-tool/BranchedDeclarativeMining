@@ -1,6 +1,7 @@
 package auth.datalab.siesta
 
 import auth.datalab.siesta.Structs.{Event, MetaData}
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.functions.{col, udf}
@@ -90,7 +91,7 @@ object extract_unordered {
           }
         })
       metaData.last_declare_mined = last_ts.toString
-//      s3Connector.write_metadata(metaData)
+      s3Connector.write_metadata(metaData)
     }
 
   }
@@ -175,10 +176,12 @@ object extract_unordered {
         .parquet(ex_choice_table)
         .withColumn("found", col("found").cast("int"))
         .as[ExChoiceRecord]
+        .cache() 
     } catch {
       case _ =>
         spark.createDataset(Seq.empty[ExChoiceRecord])
     }
+    prev_ex_choices.count()
     // Detect previous ex-choice records that are now completed
     val ex_choices_to_co_existence = if (!prev_ex_choices.isEmpty) {
       prev_ex_choices
@@ -219,11 +222,12 @@ object extract_unordered {
 
 
     // make the override
-    override_ex_choices
-      .as[ExChoiceRecord]
-      .write
-      .mode(SaveMode.Overwrite)
-      .parquet(ex_choice_table)
+    overwriteParquetAtomic(override_ex_choices.as[ExChoiceRecord],ex_choice_table)
+//    override_ex_choices
+//      .as[ExChoiceRecord]
+//      .write
+//      .mode(SaveMode.Overwrite)
+//      .parquet(ex_choice_table)
 
     //      append co-existence records
     val co_existence_records =
@@ -357,6 +361,26 @@ object extract_unordered {
     not_co_exist.persist(StorageLevel.MEMORY_AND_DISK)
     not_co_exist.show()
 
+  }
+
+  private def overwriteParquetAtomic(df: Dataset[_], finalPathStr: String): Unit = {
+    val spark = df.sparkSession
+    val hadoopConf = spark.sparkContext.hadoopConfiguration
+    val fs = FileSystem.get(new java.net.URI(finalPathStr), hadoopConf)
+
+    val finalPath = new Path(finalPathStr)
+    val tmpPath = new Path(finalPath.getParent, finalPath.getName + "_tmp_" + System.currentTimeMillis())
+
+    // 1. Write to a fresh temporary directory
+    df.write.mode(SaveMode.Overwrite).parquet(tmpPath.toString)
+
+    // 2. Delete the old directory if it exists
+    if (fs.exists(finalPath)) {
+      fs.delete(finalPath, true)
+    }
+
+    // 3. Move the tmp dir into place
+    fs.rename(tmpPath, finalPath)
   }
 
 }
