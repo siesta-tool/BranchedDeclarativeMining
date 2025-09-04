@@ -161,7 +161,7 @@ object Main {
 
           /** Unordered patterns */
           DeclareMining.incrementally_maintain_unorder_state(metaData, bEvolvedTracesBounds, newEvents, allEventTypes,affectedEvents)
-          val unorder = DeclareMining.extract_unordered_constraints(metaData)
+          val unorder = DeclareMining.extractUnordered(metaData)
 
           /** Ordered patterns */
           val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
