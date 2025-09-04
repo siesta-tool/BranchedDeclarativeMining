@@ -26,11 +26,9 @@ object Structs {
 
   case class PositionConstraint(rule: String, eventType: String, traces: Array[String])
   case class PositionConstraintRow(rule: String, eventType: String, trace: String)
-  /////
-  case class ExChoiceRecord(trace_id: String, ev_a: String, ev_b: String, found: Int)
 
+  case class ExChoiceRecord(trace_id: String, ev_a: String, ev_b: String, found: Int)
   case class CoExistenceRecord(trace_id: String, ev_a: String, ev_b: String)
-  /////
 
   // each activity existed exactly <instances> times in these <traces>
   case class ExactlyConstraint(rule: String, eventType:String, instances:Long, traces:Array[String])

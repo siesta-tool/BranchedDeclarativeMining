@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Event, MetaData, PairFull}
+import auth.datalab.siesta.Structs.{Config, Event, MetaData, PairFull}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
@@ -52,5 +52,25 @@ object Utilities {
     } yield (key1, key2)
 
     SparkSession.builder().getOrCreate().sparkContext.parallelize(cartesianProduct.toSeq)
+  }
+
+  def printConfig(config: Config): Unit = {
+    println(s"[Log Name]\t\t${config.logName}")
+    println(s"[Support]\t\t${config.support}")
+
+    config.branchingPolicy match {
+      case null | "" =>
+        println("[Branching]\t\tDisabled")
+      case policy =>
+        println(s"[Branching]\t\tPolicy=$policy, " +
+          s"Type=${config.branchingType}, " +
+          s"Bound=${config.branchingBound}, " +
+          s"Drop=${config.dropFactor}, " +
+          s"FilterRare=${config.filterRare}, " +
+          s"FilterUnderBound=${config.filterUnderBound}")
+    }
+
+    println(s"[Options]\t\tRediscovery=${config.hardRediscovery}, " +
+      s"QuickMining=${config.quickMining}")
   }
 }
