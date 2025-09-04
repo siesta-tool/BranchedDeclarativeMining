@@ -1,13 +1,17 @@
 package auth.datalab.siesta
 
 import auth.datalab.siesta.Structs._
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.{col, collect_list, concat_ws, count, lit, sum}
-import org.apache.spark.sql.{Dataset, Encoders, SaveMode, SparkSession}
+import org.apache.spark.sql.functions.{col, collect_list, concat_ws, count, lit, sum, udf}
+import org.apache.spark.sql.{Dataset, Encoders, SaveMode, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel
 
 import scala.collection.mutable.ListBuffer
+
+
+
 
 object DeclareMining {
 
@@ -220,125 +224,422 @@ object DeclareMining {
       }.collect()
   }
 
-  def extractUnordered(logName: String,
-                       affectedEvents: Dataset[Event],
-                       bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-                       bTraceIds: Broadcast[Set[String]],
-                       activityMatrix: RDD[((String, Set[String]), (String, Set[String]))],
-                       allEventOccurrences: RDD[(String, Set[String])],
-                       supportThreshold: Double,
-                       branchingPolicy: String,
-                       branchingType: String,
-                       branchingBound: Int,
-                       dropFactor: Double,
-                       filterRare: Boolean,
-                       filterUnderBound: Boolean): Array[(String, String, Array[String])] = {
+//  def extractUnordered(logName: String,
+//                       affectedEvents: Dataset[Event],
+//                       bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
+//                       bTraceIds: Broadcast[Set[String]],
+//                       activityMatrix: RDD[((String, Set[String]), (String, Set[String]))],
+//                       allEventOccurrences: RDD[(String, Set[String])],
+//                       supportThreshold: Double,
+//                       branchingPolicy: String,
+//                       branchingType: String,
+//                       branchingBound: Int,
+//                       dropFactor: Double,
+//                       filterRare: Boolean,
+//                       filterUnderBound: Boolean): Array[(String, String, Array[String])] = {
+//    val spark = SparkSession.builder().getOrCreate()
+//    import spark.implicits._
+//
+//    //get previous data if exist
+//    val unorderedPath = s"""s3a://siesta/$logName/declare/unordered.parquet/"""
+//    val oldConstraints = try {
+//      spark.read.parquet(unorderedPath).as[PairConstraintRow]
+//    } catch {
+//      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
+//    }
+//
+//    // Co-existence constraints WITHOUT THE NON-EXISTENCE OF BOTH
+//    val coexistencePositive = affectedEvents.rdd
+//      .groupBy(_.trace)
+//      .flatMap { case (traceId, events) =>
+//        val eventAs = events.map(_.eventType).toSeq.distinct
+//        for {
+//          e1 <- eventAs
+//          e2 <- eventAs
+//        } yield (e1, e2, traceId)
+//      }.union(oldConstraints.rdd.filter(_.rule == "co-existence-positive")
+//        .map(x => (x.eventA, x.eventB, x.trace)))
+//      .distinct()
+//      .toDS()
+//
+//    // Find all distinct traces from the log
+//    val allTraces = bTraceIds.value
+//    // Find the traces where each event does not exist
+//    val nonExistenceEvents = allEventOccurrences.map(x => (x._1, allTraces diff x._2))
+//    // Find the pairs of events that both do not exist in the same trace
+//    val coexistenceNegative = nonExistenceEvents.cartesian(nonExistenceEvents)
+//      .map { case ((k1, s1), (k2, s2)) => (k1, k2, s1.intersect(s2)) }
+//      .filter { case (_, _, traces) => traces.nonEmpty }
+//      .flatMap(x => {
+//        val (eventA, eventB, traces) = x
+//        traces.map(traceId => (eventA, eventB, traceId))
+//      })
+//
+//    val coexistence = coexistenceNegative.union(coexistencePositive.rdd).map(x => PairConstraintRow("co-existence", x._1, x._2, x._3)).toDS()
+//
+//    val notCoexistencePositive = activityMatrix.filter { case ((e1, _), (e2, _)) => e1 < e2 }
+//      .map { case ((e1, set1), (e2, set2)) =>
+//        val symmetricDiff = (set1 diff set2) union (set2 diff set1)
+//        (e1, e2, symmetricDiff) // converting to Set[String] if needed
+//      }.flatMap { case (e1, e2, diffSet) =>
+//        diffSet.map(traceId => (e1, e2, traceId))
+//      }
+//
+//    val notCoexistence = notCoexistencePositive.union(coexistenceNegative.map(x => (x._1, x._2, x._3)))
+//      .filter { case (_, _, traces) => traces.nonEmpty }
+//      .distinct()
+//      .map(x => PairConstraintRow("not co-existence", x._1, x._2, x._3))
+//      .toDS()
+//
+//
+//    val choice = activityMatrix.filter { case ((e1, _), (e2, _)) => e1 < e2 }
+//      .flatMap { case ((e1, set1), (e2, set2)) =>
+//        val unionSet = set1 union set2
+//        unionSet.map(traceId => (e1, e2, traceId))
+//      }.distinct()
+//      .map(x => PairConstraintRow("choice", x._1, x._2, x._3))
+//      .toDS()
+//
+//
+//    val exclusiveChoice = notCoexistencePositive.map(x => PairConstraintRow("exclusive choice", x._1, x._2, x._3)).toDS()
+//
+//    val respondedExistence = coexistencePositive.map(x => PairConstraintRow("responded existence", x._1, x._2, x._3))
+//
+//
+//    val constraintToWrite = coexistencePositive.map(x => PairConstraintRow("co-existence-positive", x._1, x._2, x._3))
+//      .union(respondedExistence).distinct().as[PairConstraintRow]
+//    constraintToWrite.count()
+//    constraintToWrite.persist(StorageLevel.MEMORY_AND_DISK)
+//    constraintToWrite.write.mode(SaveMode.Overwrite).parquet(unorderedPath)
+//
+//    val completeSingleConstraints = coexistence
+//      .union(notCoexistence)
+//      .union(choice)
+//      .union(exclusiveChoice)
+//      .union(respondedExistence)
+//      .groupBy("rule", "eventA", "eventB")
+//      .agg(collect_list($"trace").as("traces"))
+//      .as[PairConstraint]
+//
+//
+//    if (branchingPolicy == null || branchingPolicy.isEmpty) {
+//      var result = ListBuffer.empty[(String, String, Array[String])]
+//      completeSingleConstraints.collect().foreach { x =>
+//        val support = x.traces.toSet.size.toDouble / bTraceIds.value.size
+//        if (support > supportThreshold) {
+//          result += ((x.rule, x.eventA + "|" + x.eventB, x.traces.distinct))
+//        }
+//      }
+//      constraintToWrite.unpersist()
+//      result.toArray
+//    }
+//    else {
+//      var result = Array.empty[(String, String, Array[String])]
+//      result = BranchedDeclare.extractBranchedPairConstraints(completeSingleConstraints, totalTraces = bTraceIds.value.size, support = supportThreshold,
+//        policy = branchingPolicy, branchingType = branchingType, branchingBound = branchingBound,
+//        dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
+//      constraintToWrite.unpersist()
+//      result
+//    }
+//  }
+
+  ///////////////////////////////////////////////////
+
+  def incrementally_maintain_unorder_state(metaData: MetaData,
+                                           bChangedTraces: Broadcast[scala.collection.Map[String, (Int, Int)]],
+                                           new_events: Dataset[Event],
+                                           all_event_types: Set[String],
+                                           complete_traces_that_changed: Dataset[Event]): Unit = {
+    if (complete_traces_that_changed.isEmpty)
+      return
+
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
+    //    define table names
+    val ex_choice_table = s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
+    val co_existence_table = s"""s3a://siesta/${metaData.log_name}/coExistenceTable.parquet/"""
 
-    //get previous data if exist
-    val unorderedPath = s"""s3a://siesta/$logName/declare/unordered.parquet/"""
-    val oldConstraints = try {
-      spark.read.parquet(unorderedPath).as[PairConstraintRow]
-    } catch {
-      case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
-    }
+    // identify event types that did not exist in the previous batches (only if exist previous batches)
+    val unseen_event_types_till_now =
+      try {
+        val existing_event_types = spark.read.parquet(ex_choice_table)
+          .select("ev_a", "ev_b")
+          .distinct()
+          .collect()
+          .flatMap(x => {
+            Seq(x.getString(0), x.getString(1))
+          })
+          .toSet
+        all_event_types.diff(existing_event_types)
+      } catch {
+        case _: org.apache.spark.sql.AnalysisException => Set[String]()
+      }
+//    println("Unseen event types: ", unseen_event_types_till_now)
 
-    // Co-existence constraints WITHOUT THE NON-EXISTENCE OF BOTH
-    val coexistencePositive = affectedEvents.rdd
-      .groupBy(_.trace)
-      .flatMap { case (traceId, events) =>
-        val eventAs = events.map(_.eventType).toSeq.distinct
-        for {
-          e1 <- eventAs
-          e2 <- eventAs
-        } yield (e1, e2, traceId)
-      }.union(oldConstraints.rdd.filter(_.rule == "co-existence-positive")
-        .map(x => (x.eventA, x.eventB, x.trace)))
-      .distinct()
-      .toDS()
+    //  extract new ex-choices and co-existances based on the newly appeared distinct
+    val new_existence_records: Dataset[ExChoiceRecord] = complete_traces_that_changed
+      .groupByKey(x => x.trace)
+      .flatMapGroups((trace_id, events) => {
+        val events_seq = events.toSeq.toList
+        // positions of the new events in the trace, if they do not exist => consider the whole trace
+        val positions = bChangedTraces.value.getOrElse(trace_id, (0, events.size - 1))
+        // event types that exist in the new part of the trace
+        val new_event_types: Set[String] = events_seq.filter(x => x.pos >= positions._1).map(_.eventType)
+          .distinct.toSet
+        // event types that exist in the previous part of the trace
+        val prev_event_types: Set[String] = events_seq.filter(x => x.pos < positions._1).map(_.eventType)
+          .distinct.toSet
+        // event types that doesn't exist in the trace
+        val unseen_et: Set[String] = all_event_types
+          .filter(et => !prev_event_types.contains(et) && !new_event_types.contains(et))
 
-    // Find all distinct traces from the log
-    val allTraces = bTraceIds.value
-    // Find the traces where each event does not exist
-    val nonExistenceEvents = allEventOccurrences.map(x => (x._1, allTraces diff x._2))
-    // Find the pairs of events that both do not exist in the same trace
-    val coexistenceNegative = nonExistenceEvents.cartesian(nonExistenceEvents)
-      .map { case ((k1, s1), (k2, s2)) => (k1, k2, s1.intersect(s2)) }
-      .filter { case (_, _, traces) => traces.nonEmpty }
-      .flatMap(x => {
-        val (eventA, eventB, traces) = x
-        traces.map(traceId => (eventA, eventB, traceId))
+        // Extract the ex-choice and co-existence based on the newly arrived event types
+        val data = new_event_types.diff(prev_event_types).toSeq //event types that appeared in the new part of the trace
+          .flatMap(new_activity => {
+            unseen_et //joined with the events that didn't appear in this trace to create ex-choice records
+              .map(et => {
+                if (new_activity < et) {
+                  ExChoiceRecord(trace_id, new_activity, et, 0)
+                } else {
+                  ExChoiceRecord(trace_id, et, new_activity, 1)
+                }
+              }).toSeq
+          })
+        val co_existence = new_event_types.diff(prev_event_types) //event types that appeared in the new part of the trace
+          .flatMap(x1 => { // joined with all the unique event types of this trace to create co-existence records
+            (new_event_types ++ prev_event_types).filter(x2 => x2 != x1)
+              .map(x2 => {
+                if (x1 < x2) {
+                  // set to exChoice records with 2 as found (since both are found) => it is a Co-Existence record,
+                  // but it is required since it is combined with the data
+                  ExChoiceRecord(trace_id, x1, x2, 2)
+                } else {
+                  ExChoiceRecord(trace_id, x2, x1, 2)
+                }
+              })
+          })
+        data ++ co_existence
       })
 
-    val coexistence = coexistenceNegative.union(coexistencePositive.rdd).map(x => PairConstraintRow("co-existence", x._1, x._2, x._3)).toDS()
+    // Extract previous ex-choice records if they exist
+    val prev_ex_choices: Dataset[ExChoiceRecord] = try {
+      spark.read
+        .parquet(ex_choice_table)
+        .withColumn("found", col("found").cast("int"))
+        .as[ExChoiceRecord]
+        .cache()
+    } catch {
+      case _ =>
+        spark.createDataset(Seq.empty[ExChoiceRecord])
+    }
+    prev_ex_choices.count()
+    // Detect previous ex-choice records that are now completed
+    val ex_choices_to_co_existence = if (!prev_ex_choices.isEmpty) {
+      prev_ex_choices
+        .rdd
+        .groupBy(_.trace_id)
+        .join(complete_traces_that_changed.rdd.groupBy(_.trace)) //join with the traces that changed
+        .flatMap(x => {
+          val positions = bChangedTraces.value.getOrElse(x._1, (0, x._2._2.size - 1))
+          val new_event_types: Set[String] = x._2._2.toSeq.filter(x => x.pos >= positions._1).map(_.eventType)
+            .distinct.sorted.toSet
+          x._2._1.toSeq.filter(ex => {
+            (ex.found == 0 && new_event_types.contains(ex.ev_b)) || (ex.found == 1 && new_event_types.contains(ex.ev_a))
+          })
+        })
+        .toDF()
+        .select("ev_a", "ev_b", "found", "trace_id") // reorder columns to match
+    } else {
+      spark.sparkContext.emptyRDD[ExChoiceRecord].toDF()
+        .select("ev_a", "ev_b", "found", "trace_id") // reorder columns to match
+    }
 
-    val notCoexistencePositive = activityMatrix.filter { case ((e1, _), (e2, _)) => e1 < e2 }
-      .map { case ((e1, set1), (e2, set2)) =>
-        val symmetricDiff = (set1 diff set2) union (set2 diff set1)
-        (e1, e2, symmetricDiff) // converting to Set[String] if needed
-      }.flatMap { case (e1, e2, diffSet) =>
-        diffSet.map(traceId => (e1, e2, traceId))
-      }
 
-    val notCoexistence = notCoexistencePositive.union(coexistenceNegative.map(x => (x._1, x._2, x._3)))
-      .filter { case (_, _, traces) => traces.nonEmpty }
+    // calculate override ex_choice records that correspond to the changed trace_ids -> that should modify only the changed
+    // traces and not the entire db
+    val override_ex_choices_temp = if (ex_choices_to_co_existence.isEmpty) {
+      prev_ex_choices
+    } else {
+      prev_ex_choices.toDF()
+        .except(ex_choices_to_co_existence)
+    }
+
+    val override_ex_choices = override_ex_choices_temp.toDF()
+      .select("trace_id", "ev_a", "ev_b", "found")
+      .union(new_existence_records.filter(x => x.found != 2)
+        .toDF()
+        .select("trace_id", "ev_a", "ev_b", "found")
+      )
+
+
+    // make the override
+    overwriteParquetAtomic(override_ex_choices.as[ExChoiceRecord],ex_choice_table)
+    //    override_ex_choices
+    //      .as[ExChoiceRecord]
+    //      .write
+    //      .mode(SaveMode.Overwrite)
+    //      .parquet(ex_choice_table)
+
+    //      append co-existence records
+    val co_existence_records =
+      ex_choices_to_co_existence
+        .select("trace_id", "ev_a", "ev_b")
+        .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF().select("trace_id", "ev_a", "ev_b"))
+        .as[CoExistenceRecord]
+        .toDF()
+
+    // append co-existence records
+    co_existence_records
+      .write
+      .mode(SaveMode.Append)
+      .parquet(co_existence_table)
+
+    // there is a case where new even types appear in this batch and they haven't appeared in the previous batches
+    //in that case all unchanged event types should create new ex-choices records for each unique event_type they have
+
+    // already identified previous event types
+    // get from the seq table all unique event types per trace_id that does not contain the new event type
+    val seq_table = s"""s3a://siesta/${metaData.log_name}/seq.parquet/"""
+    val additional_ex_choice = spark.read.parquet(seq_table)
+      .select("trace_id", "event_type")
       .distinct()
-      .map(x => PairConstraintRow("not co-existence", x._1, x._2, x._3))
-      .toDS()
-
-
-    val choice = activityMatrix.filter { case ((e1, _), (e2, _)) => e1 < e2 }
-      .flatMap { case ((e1, set1), (e2, set2)) =>
-        val unionSet = set1 union set2
-        unionSet.map(traceId => (e1, e2, traceId))
-      }.distinct()
-      .map(x => PairConstraintRow("choice", x._1, x._2, x._3))
-      .toDS()
-
-
-    val exclusiveChoice = notCoexistencePositive.map(x => PairConstraintRow("exclusive choice", x._1, x._2, x._3)).toDS()
-
-    val respondedExistence = coexistencePositive.map(x => PairConstraintRow("responded existence", x._1, x._2, x._3))
-
-
-    val constraintToWrite = coexistencePositive.map(x => PairConstraintRow("co-existence-positive", x._1, x._2, x._3))
-      .union(respondedExistence).distinct().as[PairConstraintRow]
-    constraintToWrite.count()
-    constraintToWrite.persist(StorageLevel.MEMORY_AND_DISK)
-    constraintToWrite.write.mode(SaveMode.Overwrite).parquet(unorderedPath)
-
-    val completeSingleConstraints = coexistence
-      .union(notCoexistence)
-      .union(choice)
-      .union(exclusiveChoice)
-      .union(respondedExistence)
-      .groupBy("rule", "eventA", "eventB")
-      .agg(collect_list($"trace").as("traces"))
-      .as[PairConstraint]
-
-
-    if (branchingPolicy == null || branchingPolicy.isEmpty) {
-      var result = ListBuffer.empty[(String, String, Array[String])]
-      completeSingleConstraints.collect().foreach { x =>
-        val support = x.traces.toSet.size.toDouble / bTraceIds.value.size
-        if (support > supportThreshold) {
-          result += ((x.rule, x.eventA + "|" + x.eventB, x.traces.distinct))
-        }
-      }
-      constraintToWrite.unpersist()
-      result.toArray
+      .groupBy("trace_id")
+      .agg(functions.collect_list("event_type").alias("event_types"))
+      .filter(row => {
+        val eventTypes = row.getAs[Seq[String]]("event_types")
+        !unseen_event_types_till_now.exists(eventTypes.contains)
+      })
+      .flatMap(row => {
+        val traceId = row.getAs[String]("trace_id")
+        val eventTypes = row.getAs[Seq[String]]("event_types")
+        eventTypes.flatMap(et =>
+          unseen_event_types_till_now.map(unseen =>
+            if (et < unseen) {
+              ExChoiceRecord(traceId, et, unseen, 0)
+            } else {
+              ExChoiceRecord(traceId, unseen, et, 1)
+            }
+          )
+        )
+      })
+    if (!additional_ex_choice.isEmpty) {
+      additional_ex_choice
+        .as[ExChoiceRecord]
+        .write
+        .mode(SaveMode.Append)
+        .parquet(ex_choice_table)
     }
-    else {
-      var result = Array.empty[(String, String, Array[String])]
-      result = BranchedDeclare.extractBranchedPairConstraints(completeSingleConstraints, totalTraces = bTraceIds.value.size, support = supportThreshold,
-        policy = branchingPolicy, branchingType = branchingType, branchingBound = branchingBound,
-        dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
-      constraintToWrite.unpersist()
-      result
-    }
+
   }
 
+  def extract_unordered_constraints(metaData: MetaData): Array[(String, String, Array[String])] = {
+    val ex_choice_table = s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
+    val co_existence_table = s"""s3a://siesta/${metaData.log_name}/coExistenceTable.parquet/"""
+
+    var result: Array[(String, String, Array[String])] = Array.empty[(String, String, Array[String])]
+
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+    val ex_choice_records = spark.read
+      .parquet(ex_choice_table).as[ExChoiceRecord]
+    val co_existence_records = spark.read.parquet(co_existence_table)
+      .as[CoExistenceRecord]
+
+    // calculating ex-choices
+    val ex_choices = ex_choice_records
+      .groupBy("ev_a", "ev_b")
+      .agg(functions.collect_list("trace_id").alias("trace_ids"))
+      .select("ev_a", "ev_b", "trace_ids")
+    ex_choices.persist(StorageLevel.MEMORY_AND_DISK)
+
+
+//    ex_choices.show()
+
+    // calculating response
+    val response = co_existence_records
+      .groupBy("ev_a", "ev_b")
+      .agg(functions.collect_list("trace_id").alias("trace_ids"))
+      .select("ev_a", "ev_b", "trace_ids")
+    response.persist(StorageLevel.MEMORY_AND_DISK)
+//    response.show()
+
+    val choice = response
+      .unionByName(ex_choices)
+      .groupBy("ev_a", "ev_b")
+      .agg(functions.flatten(functions.collect_list("trace_ids")).alias("combined_trace_ids"))
+      .select(
+        functions.col("ev_a"),
+        functions.col("ev_b"),
+        functions.array_distinct(functions.col("combined_trace_ids")).alias("trace_ids")
+      )
+    choice.persist(StorageLevel.MEMORY_AND_DISK)
+//    choice.show()
+
+    //  For the next we need the negatives, so we need a complete list of all the available traces
+    val seq_table = s"""s3a://siesta/${metaData.log_name}/seq.parquet/"""
+    val all_traces = spark.read.parquet(seq_table)
+      .select("trace_id")
+      .distinct()
+      .collect()
+      .map(_.getString(0))
+      .toSet
+    val allTracesBroadcast = spark.sparkContext.broadcast(all_traces)
+
+    // UDF to subtract the trace_ids from the full set, used in co-exist and not-co-exist
+    val substract_traces = udf { (traceList: Seq[String]) =>
+      allTracesBroadcast.value.diff(traceList.toSet).toSeq
+    }
+
+    // Co-exist records is calculated by removing for each pair, the traces that exist in the ex-choice records
+    val co_exist = ex_choices
+      .withColumn("trace_ids", substract_traces(col("trace_ids")))
+      .select(
+        col("ev_a"),
+        col("ev_b"),
+        col("trace_ids")
+      )
+    co_exist.persist(StorageLevel.MEMORY_AND_DISK)
+//    co_exist.show()
+
+    val not_co_exist = response
+      .withColumn("trace_ids", substract_traces(col("trace_ids")))
+      .select(
+        col("ev_a"),
+        col("ev_b"),
+        col("trace_ids")
+      )
+    not_co_exist.persist(StorageLevel.MEMORY_AND_DISK)
+//    not_co_exist.show()
+
+    result = result ++ ex_choices.collect().map(x => ("ex-choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    result = result ++ co_exist.collect().map(x => ("co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    result = result ++ not_co_exist.collect().map(x => ("not co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    result = result ++ choice.collect().map(x => ("choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    result = result ++ response.collect().map(x => ("responded existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    result
+  }
+
+  private def overwriteParquetAtomic(df: Dataset[_], finalPathStr: String): Unit = {
+    val spark = df.sparkSession
+    val hadoopConf = spark.sparkContext.hadoopConfiguration
+    val fs = FileSystem.get(new java.net.URI(finalPathStr), hadoopConf)
+
+    val finalPath = new Path(finalPathStr)
+    val tmpPath = new Path(finalPath.getParent, finalPath.getName + "_tmp_" + System.currentTimeMillis())
+
+    // 1. Write to a fresh temporary directory
+    df.write.mode(SaveMode.Overwrite).parquet(tmpPath.toString)
+
+    // 2. Delete the old directory if it exists
+    if (fs.exists(finalPath)) {
+      fs.delete(finalPath, true)
+    }
+
+    // 3. Move the tmp dir into place
+    fs.rename(tmpPath, finalPath)
+  }
+
+  ///////////////////////////////////////////////////
   def extractOrdered(logName: String, affectedEvents: Dataset[Event],
                      bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
                      bTraceIds: Broadcast[Set[String]],
