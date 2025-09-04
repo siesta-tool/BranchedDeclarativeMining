@@ -105,7 +105,7 @@ class S3Connector {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     spark.read.parquet(this.single_table)
-      .map(x => (x.getAs[String]("event_type"), x.getAs("trace_id")))
+      .map(x => (x.getAs("event_type").toString, x.getAs("trace_id").toString))
   }
 
 
