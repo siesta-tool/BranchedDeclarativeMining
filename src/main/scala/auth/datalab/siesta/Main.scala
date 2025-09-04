@@ -1,6 +1,7 @@
 package auth.datalab.siesta
 
 import auth.datalab.siesta.Structs.{Config, Event}
+import auth.datalab.siesta.Utilities.printConfig
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel
@@ -69,16 +70,8 @@ object Main {
       case Some(config) =>
         val s3Connector = new S3Connector()
         s3Connector.initialize(config.logName)
-        println(s"Log: ${config.logName}")
-        println(s"Support: ${config.support}")
-        println(s"Branching Policy: ${config.branchingPolicy}")
-        println(s"Branching Type: ${config.branchingType}")
-        println(s"Branching Bound: ${config.branchingBound}")
-        println(s"Reduction Drop factor: ${config.dropFactor}")
-        println(s"Filter out Rare events: ${config.filterRare}")
-        println(s"Filter out under-bound templates: ${config.filterUnderBound}")
-        println(s"Find all constraints from beginning: ${config.hardRediscovery}")
-        println(s"Quick mining: ${config.quickMining}")
+
+        printConfig(config)
 
         val support = config.support
         var branchingPolicy = config.branchingPolicy
@@ -128,8 +121,6 @@ object Main {
           affectedEvents.persist(StorageLevel.MEMORY_AND_DISK)
 
           val allEventTypes = s3Connector.get_single_table().rdd.groupBy(_._1).keys.collect().toSet
-//           All possible event_type pairs matrix
-//          val allEventTypes = s3Connector.get_single_table().rdd.groupBy(_._1).map(x =>(x._1, x._2.map(_._2).toSet))
 
           /** Position patterns */
           val position = DeclareMining.extractPositionConstraints(
