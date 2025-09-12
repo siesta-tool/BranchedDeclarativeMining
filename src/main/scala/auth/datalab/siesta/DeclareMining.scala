@@ -606,7 +606,6 @@ object DeclareMining {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
     } else spark.emptyDataset[PairConstraintRow]
 
-    // Use a more memory-efficient approach instead of broadcasting the entire collection
     // Cache the oldConstraints for efficient lookups without broadcasting large data
     oldConstraints.cache()
     val oldConstraintsLookup = oldConstraints.rdd
@@ -615,7 +614,7 @@ object DeclareMining {
       .collectAsMap()
     val bOldConstraintsLookup = spark.sparkContext.broadcast(oldConstraintsLookup)
     
-    // Also collect old precedence constraints for local access
+    // Collect old precedence constraints for local access
     val oldPrecedenceConstraints = oldConstraints
       .filter(_.rule == "precedence")
       .collect()
