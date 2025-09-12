@@ -1,13 +1,12 @@
 package auth.datalab.siesta
 
 import auth.datalab.siesta.Structs.{Config, Event}
-import auth.datalab.siesta.Utilities.printConfig
+import auth.datalab.siesta.Utilities.{printConfig, parseArguments}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel
 
 import java.io.{BufferedWriter, FileWriter}
-import scopt.OParser
 
 import java.sql.Timestamp
 import scala.collection.mutable.ListBuffer
@@ -16,57 +15,7 @@ object Main {
 
   def main(args: Array[String]): Unit = {
 
-    val builder = OParser.builder[Config]
-    val parser = {
-      import builder._
-      OParser.sequence(
-        programName("SIESTA CBDeclare Constraints Mining"),
-        head("SIESTA CBDecalre Module", "1.0"),
-
-        opt[String]('l', "logname")
-          .required()
-          .action((x, c) => c.copy(logName = x))
-          .text("S3 logname is required"),
-
-        opt[Double]('s', "support")
-          .action((x, c) => c.copy(support = x))
-          .text("Support value, default is 0"),
-
-        opt[String]('p', "branchingPolicy")
-          .action((x, c) => c.copy(branchingPolicy = x))
-          .text("Branching policy, default is null"),
-
-        opt[String]('t', "branchingType")
-          .action((x, c) => c.copy(branchingType = x.toUpperCase))
-          .text("Branching type, default is 'TARGET' if policy is set"),
-
-        opt[Int]('b', "branchingBound")
-          .action((x, c) => c.copy(branchingBound = x))
-          .text("Branching bound, default is 0"),
-
-        opt[Double]('d', "dropFactor")
-          .action((x, c) => c.copy(dropFactor = x))
-          .text("Reduction Drop factor, default is 2.5"),
-
-        opt[Boolean]('r', "filterRare")
-          .action((x, c) => c.copy(filterRare = x))
-          .text("Filter out rare events, default is false"),
-
-        opt[Boolean]('u', "filterUnderBound")
-          .action((x, c) => c.copy(filterUnderBound = x))
-          .text("Filter out under-bound templates, default is false"),
-
-        opt[Boolean]('h', "hardRediscover")
-          .action((x, c) => c.copy(hardRediscovery = x))
-          .text("Hard rediscovery, default is false"),
-
-        opt[Boolean]('q', "quickMining")
-          .action((x, c) => c.copy(quickMining = x))
-          .text("Quick mining, default is false"),
-      )
-    }
-
-    OParser.parse(parser, args, Config()) match {
+    parseArguments(args) match {
       case Some(config) =>
         val s3Connector = new S3Connector()
         s3Connector.initialize(config.logName)
@@ -74,8 +23,8 @@ object Main {
         printConfig(config)
 
         val support = config.support
-        var branchingPolicy = config.branchingPolicy
-        val branchingType = config.branchingType
+        val branchingPolicy = config.getEffectiveBranchingPolicy
+        val branchingType = config.getEffectiveBranchingType
         val branchingBound = config.branchingBound
         val filterRare = config.filterRare
         val dropFactor = config.dropFactor
@@ -159,22 +108,32 @@ object Main {
             bTraceIds, metaData.traces, support, branchingPolicy, branchingType,
             branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
 
-          val l = ListBuffer[String]()
+          val allConstraints = ordered.union(position).union(existence).union(unorder)
           events.unpersist()
           affectedEvents.unpersist()
 
-          ordered.union(position).union(existence).union(unorder).foreach(x => {
-            val support = f"${x._3.length.toDouble / traceIds.size}%.3f"
-            l += s"${x._1}|${x._2}|${x._3.mkString(",")}|$support\n"
-          })
-          println("Constraints mined: " + l.size)
+          // Process constraints using the dedicated processor
+          val constraintProcessor = new ConstraintProcessor()
+          val miningResult = constraintProcessor.processConstraints(
+            allConstraints, 
+            traceIds.size, 
+            config.logName
+          )
 
-          branchingPolicy = if (branchingPolicy == null) "none" else branchingPolicy
+          println("Constraints mined: " + miningResult.totalConstraints)
 
-          val file = "constraints_" + config.logName + "_s" + support.toString + "_b" + branchingBound.toString + "_p" + branchingPolicy + ".txt"
-          val writer = new BufferedWriter(new FileWriter(file))
-          l.toList.sorted.foreach(writer.write)
-          writer.close()
+          // Generate output using the dedicated writer
+          val outputWriter = new JsonOutputWriter()
+          val jsonFile = outputWriter.generateFileName(
+            config.logName, 
+            support, 
+            branchingBound, 
+            branchingPolicy,  // This is now already normalized or null
+            config
+          )
+          
+          outputWriter.writeToFile(miningResult, jsonFile)
+          println(s"Results written to: $jsonFile")
 
           if (!newEvents.isEmpty) {
             metaData.last_declare_mined = events.rdd  //not newEvents; maybe the batch does not follow temporal order
@@ -184,6 +143,16 @@ object Main {
         })
       case _ =>
         throw new IllegalArgumentException("Wrong configuration!")
+    }
+
+    // Graceful shutdown
+    try {
+      val spark = SparkSession.getActiveSession
+      if (spark.isDefined) {
+        spark.get.stop()
+      }
+    } catch {
+      case _: Exception => // Ignore shutdown exceptions
     }
 
   }

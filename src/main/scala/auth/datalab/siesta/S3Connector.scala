@@ -36,7 +36,20 @@ class S3Connector {
 
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.path.style.access", "true")
     spark.sparkContext.hadoopConfiguration.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-    spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.ssl.enabled", "true")
+    
+    // Configure SSL based on endpoint - disable for localhost/MinIO
+    val sslEnabled = !s3endPointLoc.startsWith("localhost") && !s3endPointLoc.startsWith("127.0.0.1")
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.ssl.enabled", sslEnabled.toString)
+    
+    // Additional MinIO/S3 compatible settings
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.attempts.maximum", "3")
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.connection.establish.timeout", "10000")
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.retry.throttle.limit", "20")
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.retry.throttle.interval", "1000ms")
+    
+    // Disable multipart uploads for small files (helps with MinIO)
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.multipart.threshold", "67108864") // 64MB
+    spark.sparkContext.hadoopConfiguration.set("fs.s3a.multipart.size", "16777216") // 16MB
 
 
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")

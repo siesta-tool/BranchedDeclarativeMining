@@ -98,4 +98,24 @@ _Note: if network issues arise, consider uncommenting the `external: true` confi
   **Default**: `false`  
   **Description**: Forces a full rediscovery from scratch, ignoring any previously cached intermediate results.
 
+## Output File Naming
+
+Output files use a concise naming convention: `constraints_{LOG_NAME}[_{COMPONENT}]*.json`
+
+**Components** (only included when non-default):
+- `s{VALUE}` - Support threshold (e.g., `s025` for 0.25)
+- `{TYPE}{POLICY}{BOUND}` - Branching (e.g., `ta5` for target AND bound 5, `so` for source OR)
+- `d{VALUE}` - Drop factor (e.g., `d25` for 2.5) 
+- `f{LETTERS}` - Filters (`r`=rare, `u`=underbound)
+- `m{LETTERS}` - Modes (`q`=quick, `h`=hard rediscovery)
+
+**Branching notation:** `{TYPE}{POLICY}` where:
+- **Type**: `t`=target, `s`=source
+- **Policy**: `a`=AND, `o`=OR, `x`=XOR
+
+**Examples:**
+- `constraints_mylog.json` (default configuration)
+- `constraints_mylog_s025_ta3_fr.json` (25% support, target AND branching bound 3, filter rare)
+- `constraints_mylog_so_mq.json` (source OR branching unbounded, quick mining)
+
 ---
