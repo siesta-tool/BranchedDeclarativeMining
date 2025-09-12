@@ -18,7 +18,34 @@ object Structs {
                     filterRare: Boolean = false,
                     filterUnderBound: Boolean = false,
                     hardRediscovery: Boolean = false,
-                    quickMining:Boolean = false)
+                    quickMining:Boolean = false) {
+    
+    /**
+     * Determines if branching is enabled based on policy
+     * @return true if branching should be applied
+     */
+    def isBranchingEnabled: Boolean = branchingPolicy != null && branchingPolicy.trim.nonEmpty
+    
+    /**
+     * Gets the effective branching type, defaulting to TARGET if policy is enabled
+     * @return the branching type to use, or null if branching is disabled
+     */
+    def getEffectiveBranchingType: String = {
+      if (isBranchingEnabled) {
+        if (branchingType == null || branchingType.trim.isEmpty) "TARGET" else branchingType.toUpperCase
+      } else {
+        null
+      }
+    }
+    
+    /**
+     * Gets the normalized branching policy
+     * @return the branching policy in uppercase, or null if disabled
+     */
+    def getEffectiveBranchingPolicy: String = {
+      if (isBranchingEnabled) branchingPolicy.toUpperCase else null
+    }
+  }
 
   case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)
 
@@ -61,4 +88,24 @@ object Structs {
     targets: Array[String],
     traces: Array[String]
   ) extends Serializable
+
+  // JSON output structures for constraint mining results
+  case class Constraint(
+    source: String,
+    target: Option[String],
+    number: Option[Int],
+    traces: Seq[String],
+    support: Double
+  )
+
+  case class ConstraintGroup(
+    rule: String,
+    constraints: Seq[Constraint]
+  )
+
+  case class MiningResult(
+    logName: String,
+    totalConstraints: Int,
+    constraintGroups: Seq[ConstraintGroup]
+  )
 }

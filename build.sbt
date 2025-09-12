@@ -16,16 +16,25 @@ javacOptions ++= Seq("-source", "11", "-target", "11")
 
 libraryDependencies ++= Seq(
     "org.apache.spark" %% "spark-core" % sparkVersion, //% "provided"
-    "org.apache.spark" %% "spark-sql" % sparkVersion )
+    "org.apache.spark" %% "spark-sql" % sparkVersion 
+)
 libraryDependencies += "org.apache.hadoop" % "hadoop-common" % hadoopVersion
 libraryDependencies += "org.apache.hadoop" % "hadoop-client" % hadoopVersion
 libraryDependencies += "org.apache.hadoop" % "hadoop-aws" % hadoopVersion //3.0.3
 libraryDependencies += "com.amazonaws" % "aws-java-sdk-bundle" % "1.12.262"
 libraryDependencies += "com.github.scopt" %% "scopt" % "4.1.0"
+libraryDependencies += "org.json4s" %% "json4s-native" % "3.7.0-M11"
 
 lazy val root = (project in file("."))
   .settings(
-    name := "DeclareMiningIncrementally"
+    name := "DeclareMiningIncrementally",
+    // Fork the JVM to avoid SBT background job issues with Hadoop
+    fork := true,
+    // Provide more memory for the forked process
+    javaOptions ++= Seq(
+      "-Xmx4g",
+      "-XX:+UseG1GC"
+    )
   )
 
 assembly / assemblyMergeStrategy:= {

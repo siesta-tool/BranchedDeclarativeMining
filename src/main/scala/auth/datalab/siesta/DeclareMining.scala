@@ -92,7 +92,7 @@ object DeclareMining {
 
     var result = Array.empty[(String, String, Array[String])]
 
-    if (branchingPolicy == null || branchingPolicy.isEmpty)
+    if (!Utilities.isBranchingEnabled(branchingPolicy))
       response.collect().foreach { x =>
         val support = x.traces.length.toDouble / totalTraces
         if (support > supportThreshold) {
@@ -166,7 +166,7 @@ object DeclareMining {
     val completeSingleConstraints = this.extractAllExistenceConstraints(response, bTraceIds)
 
     var result = Array.empty[(String, String, Array[String])]
-    if (branchingPolicy == null || branchingPolicy.isEmpty)
+    if (!Utilities.isBranchingEnabled(branchingPolicy))
       completeSingleConstraints.foreach { x =>
         val support = Set(x.traces).size.toDouble / totalTraces
         if (support > supportThreshold) {
@@ -221,7 +221,7 @@ object DeclareMining {
 
         l += PairConstraint("absence", eventType, (sortedActivities.last.instances + 1).toString, bTraceIds.value.toArray)
         l.toList
-      }.collect()
+      }.collect().filter(_.traces.nonEmpty)
   }
 
   /**
@@ -795,7 +795,7 @@ object DeclareMining {
         None
     }
 
-    if (branchingPolicy != null)
+    if (Utilities.isBranchingEnabled(branchingPolicy))
       constraints = BranchedDeclare.extractBranchedPairConstraints(pairConstraints,
         totalTraces,
         supportThreshold,
