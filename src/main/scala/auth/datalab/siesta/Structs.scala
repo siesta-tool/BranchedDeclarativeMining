@@ -1,5 +1,8 @@
 package auth.datalab.siesta
 
+import org.apache.spark.sql.Dataset
+import org.apache.spark.broadcast.Broadcast
+
 object Structs {
   case class MetaData(var traces: Long, var events: Long, var pairs: Long,
                       lookback: Int, var has_previous_stored: Boolean,
@@ -107,5 +110,18 @@ object Structs {
     logName: String,
     totalConstraints: Int,
     constraintGroups: Seq[ConstraintGroup]
+  )
+
+  /**
+   * Mining context that encapsulates common parameters for constraint extraction
+   */
+  case class MiningContext(
+    metaData: MetaData,
+    affectedEvents: Dataset[Event],
+    bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
+    bTraceIds: Broadcast[Set[String]],
+    newEvents: Dataset[Event],
+    allEventTypes: Set[String],
+    totalTraces: Long
   )
 }

@@ -16,6 +16,75 @@ import scala.collection.mutable.ListBuffer
 object DeclareMining {
 
   /**
+   * Centralized mining method that extracts all constraint types
+   * @param config The configuration containing all mining parameters
+   * @param context The mining context with all common data structures
+   * @return Array of all extracted constraints combined
+   */
+  def mine(config: Config, context: MiningContext): Array[(String, String, Array[String])] = {
+    
+    // Extract position constraints
+    val position = extractPositionConstraints(
+      logName = context.metaData.log_name,
+      affectedEvents = context.affectedEvents,
+      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+      supportThreshold = config.support,
+      totalTraces = context.totalTraces,
+      branchingPolicy = config.getEffectiveBranchingPolicy,
+      branchingBound = config.branchingBound,
+      filterRare = config.filterRare,
+      dropFactor = config.dropFactor,
+      filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false,
+      hardRediscover = config.hardRediscovery
+    )
+    
+    // Extract existence constraints
+    val existence = extractExistenceConstraints(
+      logName = context.metaData.log_name,
+      affectedEvents = context.affectedEvents,
+      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+      supportThreshold = config.support,
+      totalTraces = context.totalTraces,
+      bTraceIds = context.bTraceIds,
+      branchingPolicy = config.getEffectiveBranchingPolicy,
+      branchingBound = config.branchingBound,
+      filterRare = config.filterRare,
+      dropFactor = config.dropFactor,
+      filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false
+    )
+    
+    // Maintain unordered state and extract unordered constraints
+    incrementally_maintain_unorder_state(
+      context.metaData, 
+      context.bEvolvedTracesBounds, 
+      context.newEvents, 
+      context.allEventTypes, 
+      context.affectedEvents
+    )
+    val unorder = extractUnordered(context.metaData)
+    
+    // Extract ordered constraints
+    val ordered = extractOrdered(
+      logName = context.metaData.log_name,
+      affectedEvents = context.affectedEvents,
+      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+      bTraceIds = context.bTraceIds,
+      totalTraces = context.totalTraces,
+      supportThreshold = config.support,
+      branchingPolicy = config.getEffectiveBranchingPolicy,
+      branchingType = config.getEffectiveBranchingType,
+      branchingBound = config.branchingBound,
+      filterRare = config.filterRare,
+      dropFactor = config.dropFactor,
+      filterBounded = if (config.branchingBound > 0) config.filterUnderBound else false,
+      hardRediscover = config.hardRediscovery
+    )
+    
+    // Combine all constraints
+    ordered.union(position).union(existence).union(unorder)
+  }
+
+  /**
    * Extracts position constraints from the new events and merges them with the existing ones.
    *
    * @param logName              The name of the log.
@@ -72,12 +141,10 @@ object DeclareMining {
       .union(newEventsConstraints)
 
     constraints.count()
-    constraints.persist(StorageLevel.MEMORY_AND_DISK)
     constraints
       .write
       .mode(SaveMode.Overwrite)
       .parquet(positionConstraintsPath)
-    constraints.unpersist()
 
     val response = constraints
       .rdd
@@ -315,7 +382,6 @@ object DeclareMining {
         .parquet(ex_choice_table)
         .withColumn("found", col("found").cast("int"))
         .as[ExChoiceRecord]
-        .cache()
     } catch {
       case _ =>
         spark.createDataset(Seq.empty[ExChoiceRecord])
@@ -433,14 +499,12 @@ object DeclareMining {
       .groupBy("ev_a", "ev_b")
       .agg(functions.collect_list("trace_id").alias("trace_ids"))
       .select("ev_a", "ev_b", "trace_ids")
-    ex_choices.persist(StorageLevel.MEMORY_AND_DISK)
 
     // calculating response
     val response = co_existence_records
       .groupBy("ev_a", "ev_b")
       .agg(functions.collect_list("trace_id").alias("trace_ids"))
       .select("ev_a", "ev_b", "trace_ids")
-    response.persist(StorageLevel.MEMORY_AND_DISK)
 
     val choice = response
       .unionByName(ex_choices)
@@ -451,7 +515,6 @@ object DeclareMining {
         functions.col("ev_b"),
         functions.array_distinct(functions.col("combined_trace_ids")).alias("trace_ids")
       )
-    choice.persist(StorageLevel.MEMORY_AND_DISK)
 
     //  For the next we need the negatives, so we need a complete list of all the available traces
     val seq_table = s"""s3a://siesta/${metaData.log_name}/seq.parquet/"""
@@ -476,7 +539,6 @@ object DeclareMining {
         col("ev_b"),
         col("trace_ids")
       )
-    co_exist.persist(StorageLevel.MEMORY_AND_DISK)
 
     val not_co_exist = response
       .withColumn("trace_ids", substract_traces(col("trace_ids")))
@@ -485,13 +547,16 @@ object DeclareMining {
         col("ev_b"),
         col("trace_ids")
       )
-    not_co_exist.persist(StorageLevel.MEMORY_AND_DISK)
 
     result = result ++ ex_choices.collect().map(x => ("ex-choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
     result = result ++ co_exist.collect().map(x => ("co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
     result = result ++ not_co_exist.collect().map(x => ("not co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
     result = result ++ choice.collect().map(x => ("choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
     result = result ++ response.collect().map(x => ("responded existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    
+    // Clean up broadcast variable
+    allTracesBroadcast.unpersist()
+    
     result
   }
 
@@ -541,7 +606,20 @@ object DeclareMining {
       case _: org.apache.spark.sql.AnalysisException => spark.emptyDataset[PairConstraintRow]
     } else spark.emptyDataset[PairConstraintRow]
 
-    val bOldConstraints = spark.sparkContext.broadcast(oldConstraints.collect().toSet)
+    // Use a more memory-efficient approach instead of broadcasting the entire collection
+    // Cache the oldConstraints for efficient lookups without broadcasting large data
+    oldConstraints.cache()
+    val oldConstraintsLookup = oldConstraints.rdd
+      .filter(_.rule == "response")
+      .map(c => ((c.trace, c.eventA, c.eventB), true))
+      .collectAsMap()
+    val bOldConstraintsLookup = spark.sparkContext.broadcast(oldConstraintsLookup)
+    
+    // Also collect old precedence constraints for local access
+    val oldPrecedenceConstraints = oldConstraints
+      .filter(_.rule == "precedence")
+      .collect()
+      .groupBy(_.trace)
 
     val evolvedTraces = affectedEvents.rdd.groupBy(_.trace)
 
@@ -646,10 +724,7 @@ object DeclareMining {
           val newResponses = extractResponseRelations(traceId, evolvedTracePart).distinct.filterNot { x =>
             oldEventTypes.contains(x.eventA) &&
               oldEventTypes.contains(x.eventB) &&
-              !bOldConstraints.value
-                .filter(_.rule == "response")
-                .filter(_.trace == traceId)
-                .exists(y => y.eventA == x.eventA && y.eventB == x.eventB)}
+              !bOldConstraintsLookup.value.contains((traceId, x.eventA, x.eventB))}
           val newEventTypes = evolvedEventTypes diff oldEventTypes
           val crossNewResponses = oldEventTypes.flatMap { eventA =>
             newEventTypes.map { eventB =>
@@ -669,12 +744,8 @@ object DeclareMining {
           val newPrecedences = extractPrecedenceRelations(evolvedTracePart, newResponses).distinct.filterNot { x =>
             oldEventTypes.contains(x.eventA) &&
               oldEventTypes.contains(x.eventB) &&
-              !bOldConstraints.value
-                .filter(_.rule == "precedence")
-                .filter(_.trace == traceId)
-                .exists(y => y.eventA == x.eventA && y.eventB == x.eventB)}
-          val validOldPrecedences = bOldConstraints.value
-            .filter(x => x.rule == "precedence" && x.trace == traceId)
+              !bOldConstraintsLookup.value.contains((traceId, x.eventA, x.eventB))}
+          val validOldPrecedences = oldPrecedenceConstraints.getOrElse(traceId, Array.empty)
             .map { case PairConstraintRow(_, eventA, eventB, _) =>
               if (!evolvedEventTypes.contains(eventB) || !evolvedEventTypes.contains(eventA))
                 Some(PairConstraintRow("precedence", eventA, eventB, traceId))
@@ -806,6 +877,11 @@ object DeclareMining {
         filterRare = filterRare,
         filterUnderBound = filterBounded)
     pairConstraints.unpersist()
+    
+    // Clean up broadcast variables and cached data
+    bOldConstraintsLookup.unpersist()
+    oldConstraints.unpersist()
+    
     constraints
   }
 

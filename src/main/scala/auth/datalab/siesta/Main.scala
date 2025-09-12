@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Config, Event}
+import auth.datalab.siesta.Structs.{Config, Event, MiningContext}
 import auth.datalab.siesta.Utilities.{printConfig, parseArguments}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
@@ -22,13 +22,6 @@ object Main {
 
         printConfig(config)
 
-        val support = config.support
-        val branchingPolicy = config.getEffectiveBranchingPolicy
-        val branchingType = config.getEffectiveBranchingType
-        val branchingBound = config.branchingBound
-        val filterRare = config.filterRare
-        val dropFactor = config.dropFactor
-        val filterUnderBound = if (branchingBound > 0) config.filterUnderBound else false
         val hardRediscover = config.hardRediscovery
         val quickMining = config.quickMining
         val metaData = s3Connector.get_metadata()
@@ -71,44 +64,20 @@ object Main {
 
           val allEventTypes = s3Connector.get_single_table().rdd.groupBy(_._1).keys.collect().toSet
 
-          /** Position patterns */
-          val position = DeclareMining.extractPositionConstraints(
-            logName = metaData.log_name,
-            affectedEvents = affectedEvents,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
-            supportThreshold = support,
-            totalTraces = metaData.traces,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound,
-            hardRediscover = hardRediscover)
+          // Create mining context to encapsulate common parameters
+          val miningContext = MiningContext(
+            metaData,
+            affectedEvents,
+            bEvolvedTracesBounds,
+            bTraceIds,
+            newEvents,
+            allEventTypes,
+            metaData.traces
+          )
 
-          /** Existence patterns */
-          val existence = DeclareMining.extractExistenceConstraints(
-            logName = metaData.log_name,
-            affectedEvents = affectedEvents,
-            bEvolvedTracesBounds = bEvolvedTracesBounds,
-            supportThreshold = support,
-            totalTraces = metaData.traces,
-            bTraceIds = bTraceIds,
-            branchingPolicy = branchingPolicy,
-            branchingBound = branchingBound,
-            filterRare = filterRare,
-            dropFactor = dropFactor,
-            filterUnderBound = filterUnderBound)
+          // Mine all constraints using the centralized method
+          val allConstraints = DeclareMining.mine(config, miningContext)
 
-          /** Unordered patterns */
-          DeclareMining.incrementally_maintain_unorder_state(metaData, bEvolvedTracesBounds, newEvents, allEventTypes,affectedEvents)
-          val unorder = DeclareMining.extractUnordered(metaData)
-
-          /** Ordered patterns */
-          val ordered = DeclareMining.extractOrdered(metaData.log_name, affectedEvents, bEvolvedTracesBounds,
-            bTraceIds, metaData.traces, support, branchingPolicy, branchingType,
-            branchingBound, filterRare = filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound, hardRediscover = hardRediscover)
-
-          val allConstraints = ordered.union(position).union(existence).union(unorder)
           events.unpersist()
           affectedEvents.unpersist()
 
@@ -126,9 +95,9 @@ object Main {
           val outputWriter = new JsonOutputWriter()
           val jsonFile = outputWriter.generateFileName(
             config.logName, 
-            support, 
-            branchingBound, 
-            branchingPolicy,  // This is now already normalized or null
+            config.support, 
+            config.branchingBound, 
+            config.getEffectiveBranchingPolicy,
             config
           )
           

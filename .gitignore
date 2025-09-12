@@ -26,3 +26,5 @@ sbt.json
 .metals
 project/
 .vscode/
+
+constraints_*.json
