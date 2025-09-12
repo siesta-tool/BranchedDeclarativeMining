@@ -27,8 +27,9 @@ object Main {
         val metaData = s3Connector.get_metadata()
 
         val spark = SparkSession.builder().getOrCreate()
-        spark.time({ import spark.implicits._
+        import spark.implicits._
 
+        val (miningResult, traceIds, events, newEvents) = spark.time({
           /** Extract all preprocessed events of the log from S3 */
           val events: Dataset[Event] = s3Connector.get_events_sequence_table()
           events.persist(StorageLevel.MEMORY_AND_DISK)
@@ -91,25 +92,27 @@ object Main {
 
           println("Constraints mined: " + miningResult.totalConstraints)
 
-          // Generate output using the dedicated writer
-          val outputWriter = new JsonOutputWriter()
-          val jsonFile = outputWriter.generateFileName(
-            config.logName, 
-            config.support, 
-            config.branchingBound, 
-            config.getEffectiveBranchingPolicy,
-            config
-          )
-          
-          outputWriter.writeToFile(miningResult, jsonFile)
-          println(s"Results written to: $jsonFile")
-
-          if (!newEvents.isEmpty) {
-            metaData.last_declare_mined = events.rdd  //not newEvents; maybe the batch does not follow temporal order
-              .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
-            s3Connector.write_metadata(metaData)
-          }
+          (miningResult, traceIds, events, newEvents)
         })
+
+        // Generate output using the dedicated writer (outside of spark.time)
+        val outputWriter = new JsonOutputWriter()
+        val jsonFile = outputWriter.generateFileName(
+          config.logName, 
+          config.support, 
+          config.branchingBound, 
+          config.getEffectiveBranchingPolicy,
+          config
+        )
+        
+        outputWriter.writeToFile(miningResult, jsonFile)
+        println(s"Results written to: $jsonFile")
+
+        if (!newEvents.isEmpty) {
+          metaData.last_declare_mined = events.rdd  //not newEvents; maybe the batch does not follow temporal order
+            .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
+          s3Connector.write_metadata(metaData)
+        }
       case _ =>
         throw new IllegalArgumentException("Wrong configuration!")
     }
