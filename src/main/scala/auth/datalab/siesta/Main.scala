@@ -102,7 +102,8 @@ object Main {
           config.support, 
           config.branchingBound, 
           config.getEffectiveBranchingPolicy,
-          config
+          config,
+          config.outputPath
         )
         
         outputWriter.writeToFile(miningResult, jsonFile)

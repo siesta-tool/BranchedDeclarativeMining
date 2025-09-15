@@ -27,4 +27,6 @@ sbt.json
 project/
 .vscode/
 
+output/
+
 constraints_*.json

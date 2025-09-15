@@ -4,7 +4,8 @@ import auth.datalab.siesta.Structs.{Constraint, ConstraintGroup, MiningResult}
 import org.json4s._
 import org.json4s.native.Serialization
 import org.json4s.native.Serialization.write
-import java.io.{BufferedWriter, FileWriter}
+import java.io.{BufferedWriter, FileWriter, File}
+import java.nio.file.{Files, Paths}
 
 /**
  * Handles JSON serialization and file output for constraint mining results
@@ -18,9 +19,16 @@ class JsonOutputWriter {
    * Writes mining results to a JSON file with pretty formatting
    * 
    * @param miningResult The mining results to write
-   * @param fileName The output file name
+   * @param fileName The output file name (full path)
    */
   def writeToFile(miningResult: MiningResult, fileName: String): Unit = {
+    // Ensure output directory exists
+    val file = new File(fileName)
+    val parentDir = file.getParentFile
+    if (parentDir != null && !parentDir.exists()) {
+      parentDir.mkdirs()
+    }
+    
     val jsonString = write(miningResult)
     val writer = new BufferedWriter(new FileWriter(fileName))
     
@@ -45,11 +53,13 @@ class JsonOutputWriter {
    * @param branchingBound The branching bound
    * @param branchingPolicy The normalized branching policy (null if disabled)
    * @param config Additional configuration for more semantic naming
-   * @return The generated filename
+   * @param outputPath The output directory path
+   * @return The generated full file path
    */
   def generateFileName(logName: String, support: Double, branchingBound: Int, branchingPolicy: String, 
-                      config: auth.datalab.siesta.Structs.Config): String = {
+                      config: auth.datalab.siesta.Structs.Config, outputPath: String = null): String = {
     
+    val basePath = if (outputPath != null) outputPath else config.outputPath
     val parts = scala.collection.mutable.ListBuffer[String]()
     
     // Base name
@@ -93,7 +103,8 @@ class JsonOutputWriter {
       parts += s"m${modes.mkString("")}"
     }
     
-    "constraints_" + parts.mkString("_") + ".json"
+    val fileName = "constraints_" + parts.mkString("_") + ".json"
+    Paths.get(basePath, fileName).toString
   }
 
   /**
