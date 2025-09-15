@@ -30,3 +30,5 @@ project/
 output/
 
 constraints_*.json
+
+docker-compose-local.yml

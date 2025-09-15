@@ -1,4 +1,4 @@
-FROM openjdk:11 AS builder
+FROM openjdk:17-jdk-slim AS builder
 
 RUN apt-get update && apt-get install -y gnupg2 curl scala
 RUN echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | tee /etc/apt/sources.list.d/sbt.list && \
@@ -20,17 +20,15 @@ WORKDIR /app
 RUN sbt clean assembly
 RUN mv target/scala-2.12/DeclareMiningIncrementally-assembly-0.1.0-SNAPSHOT.jar declare.jar
 
-FROM openjdk:11 AS execution
+FROM openjdk:17-jdk-slim AS execution
 RUN apt-get update && apt-get install -y gnupg2 curl procps
 
-RUN curl -O https://archive.apache.org/dist/spark/spark-3.5.1/spark-3.5.1-bin-hadoop3.tgz &&\
-tar xvf spark-3.5.1-bin-hadoop3.tgz && mv spark-3.5.1-bin-hadoop3/ /opt/spark && rm spark-3.5.1-bin-hadoop3.tgz
+RUN curl -O https://archive.apache.org/dist/spark/spark-3.5.6/spark-3.5.6-bin-hadoop3.tgz &&\
+tar xvf spark-3.5.6-bin-hadoop3.tgz && mv spark-3.5.6-bin-hadoop3/ /opt/spark && rm spark-3.5.6-bin-hadoop3.tgz
 
 RUN mkdir /app
 WORKDIR /app
-RUN mkdir /app/output
 RUN mkdir /tmp/spark-events
 COPY --from=declare /app/declare.jar /app/declare.jar
-COPY evaluation/incremental_evaluation/script.sh /app/script.sh
 
 CMD ["tail","-f","/dev/null"]
