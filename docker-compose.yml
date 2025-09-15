@@ -60,6 +60,7 @@ services:
       - s3ConnectionTimeout=60
       - s3endPointLoc=http://minio:9000
       - s3secretKeyAws=minioadmin
+      - JAVA_TOOL_OPTIONS="-XX:-UseContainerSupport"
     volumes:
       - ./output:/app/output
     entrypoint:
@@ -73,9 +74,9 @@ services:
       - --conf
       - spark.eventLog.dir=/tmp/spark-events
       - declare.jar
-    command: ["-l", "test", "--support", "0.5", "-p", "AND"]
-    depends_on:
-      - minio
+    command: ["-l", "log_t5e5", "-h", "true", "--support", "0.5", "--outputPath", "/app/output"]
+    # depends_on:
+    #   - minio
     networks:
       - siesta-net
 

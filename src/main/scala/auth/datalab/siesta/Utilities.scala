@@ -142,6 +142,10 @@ object Utilities {
       opt[Boolean]('q', "quickMining")
         .action((x, c) => c.copy(quickMining = x))
         .text("Quick mining, default is false"),
+
+      opt[String]('o', "outputPath")
+        .action((x, c) => c.copy(outputPath = x))
+        .text("Output directory path, default is './output'"),
     )
   }
 

@@ -21,7 +21,8 @@ object Structs {
                     filterRare: Boolean = false,
                     filterUnderBound: Boolean = false,
                     hardRediscovery: Boolean = false,
-                    quickMining:Boolean = false) {
+                    quickMining:Boolean = false,
+                    outputPath: String = "./output") {
     
     /**
      * Determines if branching is enabled based on policy
