@@ -21,7 +21,7 @@ object DeclareMining {
    * @param context The mining context with all common data structures
    * @return Array of all extracted constraints combined
    */
-  def mine(config: Config, context: MiningContext): Array[(String, String, Array[String])] = {
+  def mine(config: Config, context: MiningContext): Array[(String, String, Set[String])] = {
     
     // Extract position constraints
     val position = extractPositionConstraints(
@@ -110,7 +110,7 @@ object DeclareMining {
                                  filterRare: Boolean,
                                  filterUnderBound: Boolean,
                                  hardRediscover: Boolean
-                                ): Array[(String, String, Array[String])] = {
+                                ): Array[(String, String, Set[String])] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -125,13 +125,13 @@ object DeclareMining {
     // Filter out oldConstraints to exclude existence measurements for the traces
     // that have evolved and keep only the unrelated ones
     val fixedOldConstraints = oldConstraints
-      .filter(x => x.rule == "first" || bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == -1)
+      .filter(x => x.rule == "first" || bEvolvedTracesBounds.value.getOrElse(x.trace_id, (-1, -1))._2 == -1)
 
     // Find the first and last position constraints for the new events
     val newEventsConstraints: Dataset[PositionConstraintRow] = affectedEvents.map(x => {
-        if (x.pos == 0) Some(PositionConstraintRow("first", x.eventType, x.trace)) // a new trace is initiated by this new event
-        else if (bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == x.pos) // this new event is the last event of the evolved trace
-          Some(PositionConstraintRow("last", x.eventType, x.trace))
+        if (x.pos == 0) Some(PositionConstraintRow("first", x.event_type, x.trace_id)) // a new trace is initiated by this new event
+        else if (bEvolvedTracesBounds.value.getOrElse(x.trace_id, (-1, -1))._2 == x.pos) // this new event is the last event of the evolved trace
+          Some(PositionConstraintRow("last", x.event_type, x.trace_id))
         else null // this new event is intermediate in an evolved trace
       }).filter(_.isDefined)
       .map(_.get)
@@ -148,26 +148,26 @@ object DeclareMining {
 
     val response = constraints
       .rdd
-      .map(x => PositionConstraint(x.rule, x.eventType, Array(x.trace)))
-      .keyBy(x => (x.rule, x.eventType))
-      .reduceByKey((x, y) => PositionConstraint(x.rule, x.eventType, x.traces ++ y.traces))
+      .map(x => PositionConstraint(x.rule, x.event_type, Set(x.trace_id)))
+      .keyBy(x => (x.rule, x.event_type))
+      .reduceByKey((x, y) => PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces))
       .map(_._2)
       .toDS()
 
     response.count()
     response.persist(StorageLevel.MEMORY_AND_DISK)
 
-    var result = Array.empty[(String, String, Array[String])]
+    var result = Array.empty[(String, String, Set[String])]
 
     if (!Utilities.isBranchingEnabled(branchingPolicy))
       response.collect().foreach { x =>
-        val support = x.traces.length.toDouble / totalTraces
+        val support = x.traces.size.toDouble / totalTraces
         if (support > supportThreshold) {
-          result = result :+ ((x.rule, x.eventType, x.traces))
+          result = result :+ ((x.rule, x.event_type, x.traces))
         }
       }
     else {
-      BranchedDeclare.extractBranchedSingleConstraints(response, totalTraces, supportThreshold, branchingPolicy,
+      result = BranchedDeclare.extractBranchedSingleConstraints(response, totalTraces, supportThreshold, branchingPolicy,
         branchingBound, dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
     }
     response.unpersist()
@@ -185,7 +185,7 @@ object DeclareMining {
                                   dropFactor: Double,
                                   filterRare: Boolean,
                                   filterUnderBound: Boolean
-                                 ): Array[(String, String, Array[String])] = {
+                                 ): Array[(String, String, Set[String])] = {
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
@@ -200,22 +200,22 @@ object DeclareMining {
 
     // Take the affected events and re-evaluate the existence on their traces
     val newConstraints = affectedEvents
-      .groupBy($"eventType", $"trace")
+      .groupBy($"event_type", $"trace_id")
       .agg(count("*").as("instances"))
       .withColumn("rule", lit("exactly"))
-      .select($"rule", $"eventType", $"instances", $"trace")
+      .select($"rule", $"event_type", $"instances", $"trace_id")
       .as[ExactlyConstraintRow]
 
     // Filter out oldConstraints to exclude existence measurements for the traces
     // that have evolved and keep only the unrelated ones
     val finalConstraints = oldConstraints
-      .filter(x => bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == -1)
+      .filter(x => bEvolvedTracesBounds.value.getOrElse(x.trace_id, (-1, -1))._2 == -1)
       .union(newConstraints)
-//      .join(newConstraints.select($"eventType", $"trace").distinct(), Seq("eventType", "trace"), "left_anti")
-//      .select($"rule", $"eventType", $"instances", $"trace")
+//      .join(newConstraints.select($"event_type", $"trace_id").distinct(), Seq("event_type", "trace_id"), "left_anti")
+//      .select($"rule", $"event_type", $"instances", $"trace_id")
       .as[ExactlyConstraintRow]
 
-//    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"eventType", $"instances", $"trace").as[ExactlyConstraintRow])
+//    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"event_type", $"instances", $"trace_id").as[ExactlyConstraintRow])
 
     finalConstraints.count()
     finalConstraints.persist(StorageLevel.MEMORY_AND_DISK)
@@ -223,28 +223,28 @@ object DeclareMining {
 
     val response: Dataset[ExactlyConstraint] = finalConstraints.rdd
       .map(x => {
-        ExactlyConstraint(x.rule, x.eventType, x.instances, Array(x.trace))
+        ExactlyConstraint(x.rule, x.event_type, x.instances, Set(x.trace_id))
       })
-      .keyBy(x => (x.rule, x.eventType, x.instances))
-      .reduceByKey((x, y) => ExactlyConstraint(x.rule, x.eventType, x.instances, x.traces ++ y.traces))
+      .keyBy(x => (x.rule, x.event_type, x.instances))
+      .reduceByKey((x, y) => ExactlyConstraint(x.rule, x.event_type, x.instances, x.traces ++ y.traces))
       .map(_._2)
       .toDS()
 
     val completeSingleConstraints = this.extractAllExistenceConstraints(response, bTraceIds)
 
-    var result = Array.empty[(String, String, Array[String])]
+    var result = Array.empty[(String, String, Set[String])]
     if (!Utilities.isBranchingEnabled(branchingPolicy))
       completeSingleConstraints.foreach { x =>
         val support = Set(x.traces).size.toDouble / totalTraces
         if (support > supportThreshold) {
-          result = result :+ (x.rule, x.eventA + "|" + x.eventB, x.traces)
+          result = result :+ (x.rule, x.source + "|" + x.target, x.traces)
         }
       }
     else {
-      // We consider the existence constraints implicitly as pair constraints (eventB = instances),
+      // We consider the existence constraints implicitly as pair constraints (target = instances),
       // and we use the same extraction method as for pair constraints, but we branch always for the
-      // same eventB (instances) -> source branching
-      val dummyImplicit = response.map(x => PairConstraint(x.rule, x.eventType, x.instances.toString, x.traces))
+      // same target (instances) -> source branching
+      val dummyImplicit = response.map(x => PairConstraint(x.rule, x.event_type, x.instances.toString, x.traces))
       result = BranchedDeclare.extractBranchedPairConstraints(dummyImplicit, totalTraces = totalTraces, support = supportThreshold,
         policy = branchingPolicy, branchingType = "SOURCE", branchingBound = branchingBound,
         dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
@@ -257,8 +257,8 @@ object DeclareMining {
                                      bTraceIds: Broadcast[Set[String]]): Array[PairConstraint] = {
     exactly
       .rdd
-      .groupBy(_.eventType)
-      .flatMap { case (eventType, activities) =>
+      .groupBy(_.event_type)
+      .flatMap { case (event_type, activities) =>
         val l = ListBuffer[PairConstraint]()
 
         val sortedActivities = activities.toList.sortBy(_.instances)
@@ -268,25 +268,25 @@ object DeclareMining {
         sortedActivities.foreach { activity =>
           // Exactly constraint
           l += PairConstraint("exactly",
-            eventType,
+            event_type,
             activity.instances.toString,
             activity.traces)
 
           // Existence constraint
           l += PairConstraint("existence",
-            eventType,
+            event_type,
             activity.instances.toString,
-            (bTraceIds.value diff cumulativeExistence).toArray)
+            bTraceIds.value diff cumulativeExistence)
 
           cumulativeExistence ++= activity.traces
 
           // Absence constraint
-          l += PairConstraint("absence", eventType, activity.instances.toString, cumulativeAbsence.toArray)
+          l += PairConstraint("absence", event_type, activity.instances.toString, cumulativeAbsence)
 
           cumulativeAbsence ++= activity.traces
         }
 
-        l += PairConstraint("absence", eventType, (sortedActivities.last.instances + 1).toString, bTraceIds.value.toArray)
+        l += PairConstraint("absence", event_type, (sortedActivities.last.instances + 1).toString, bTraceIds.value)
         l.toList
       }.collect().filter(_.traces.nonEmpty)
   }
@@ -318,7 +318,7 @@ object DeclareMining {
     val unseen_event_types_till_now =
       try {
         val existing_event_types = spark.read.parquet(ex_choice_table)
-          .select("ev_a", "ev_b")
+          .select("source", "target")
           .distinct()
           .collect()
           .flatMap(x => {
@@ -333,16 +333,16 @@ object DeclareMining {
 
     //  extract new ex-choices and co-existances based on the newly appeared distinct
     val new_existence_records: Dataset[ExChoiceRecord] = complete_traces_that_changed
-      .groupByKey(x => x.trace)
+      .groupByKey(x => x.trace_id)
       .flatMapGroups((trace_id, events) => {
         val events_seq = events.toSeq.toList
         // positions of the new events in the trace, if they do not exist => consider the whole trace
         val positions = bChangedTraces.value.getOrElse(trace_id, (0, events.size - 1))
         // event types that exist in the new part of the trace
-        val new_event_types: Set[String] = events_seq.filter(x => x.pos >= positions._1).map(_.eventType)
+        val new_event_types: Set[String] = events_seq.filter(x => x.pos >= positions._1).map(_.event_type)
           .distinct.toSet
         // event types that exist in the previous part of the trace
-        val prev_event_types: Set[String] = events_seq.filter(x => x.pos < positions._1).map(_.eventType)
+        val prev_event_types: Set[String] = events_seq.filter(x => x.pos < positions._1).map(_.event_type)
           .distinct.toSet
         // event types that doesn't exist in the trace
         val unseen_et: Set[String] = all_event_types
@@ -383,7 +383,7 @@ object DeclareMining {
         .withColumn("found", col("found").cast("int"))
         .as[ExChoiceRecord]
     } catch {
-      case _ =>
+      case _: org.apache.spark.sql.AnalysisException =>
         spark.createDataset(Seq.empty[ExChoiceRecord])
     }
     prev_ex_choices.count()
@@ -392,20 +392,20 @@ object DeclareMining {
       prev_ex_choices
         .rdd
         .groupBy(_.trace_id)
-        .join(complete_traces_that_changed.rdd.groupBy(_.trace)) //join with the traces that changed
+        .join(complete_traces_that_changed.rdd.groupBy(_.trace_id)) //join with the traces that changed
         .flatMap(x => {
           val positions = bChangedTraces.value.getOrElse(x._1, (0, x._2._2.size - 1))
-          val new_event_types: Set[String] = x._2._2.toSeq.filter(x => x.pos >= positions._1).map(_.eventType)
+          val new_event_types: Set[String] = x._2._2.toSeq.filter(x => x.pos >= positions._1).map(_.event_type)
             .distinct.sorted.toSet
           x._2._1.toSeq.filter(ex => {
-            (ex.found == 0 && new_event_types.contains(ex.ev_b)) || (ex.found == 1 && new_event_types.contains(ex.ev_a))
+            (ex.found == 0 && new_event_types.contains(ex.target)) || (ex.found == 1 && new_event_types.contains(ex.source))
           })
         })
         .toDF()
-        .select("ev_a", "ev_b", "found", "trace_id") // reorder columns to match
+        .select("source", "target", "found", "trace_id") // reorder columns to match
     } else {
       spark.sparkContext.emptyRDD[ExChoiceRecord].toDF()
-        .select("ev_a", "ev_b", "found", "trace_id") // reorder columns to match
+        .select("source", "target", "found", "trace_id") // reorder columns to match
     }
 
 
@@ -419,22 +419,26 @@ object DeclareMining {
     }
 
     val override_ex_choices = override_ex_choices_temp.toDF()
-      .select("trace_id", "ev_a", "ev_b", "found")
+      .select("trace_id", "source", "target", "found")
       .union(new_existence_records.filter(x => x.found != 2)
         .toDF()
-        .select("trace_id", "ev_a", "ev_b", "found")
+        .select("trace_id", "source", "target", "found")
       )
 
 
     // make the override
-    overwriteParquetAtomic(override_ex_choices.as[ExChoiceRecord],ex_choice_table)
+    overwriteParquetAtomic(override_ex_choices.as[ExChoiceRecord]
+      .withColumnRenamed("source", "ev_a")
+      .withColumnRenamed("target", "ev_b"), ex_choice_table)
 
     //      append co-existence records
     val co_existence_records =
       ex_choices_to_co_existence
-        .select("trace_id", "ev_a", "ev_b")
-        .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF().select("trace_id", "ev_a", "ev_b"))
+        .select("trace_id", "source", "target")
+        .union(new_existence_records.filter(_.found == 2).as[ExChoiceRecord].toDF().select("trace_id", "source", "target"))
         .as[CoExistenceRecord]
+        .withColumnRenamed("source", "ev_a")
+        .withColumnRenamed("target", "ev_b")
         .toDF()
 
     // append co-existence records
@@ -481,38 +485,43 @@ object DeclareMining {
 
   }
 
-  def extractUnordered(metaData: MetaData): Array[(String, String, Array[String])] = {
+  def extractUnordered(metaData: MetaData): Array[(String, String, Set[String])] = {
     val ex_choice_table = s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
     val co_existence_table = s"""s3a://siesta/${metaData.log_name}/coExistenceTable.parquet/"""
 
-    var result: Array[(String, String, Array[String])] = Array.empty[(String, String, Array[String])]
+    var result: Array[(String, String, Set[String])] = Array.empty[(String, String, Set[String])]
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
     val ex_choice_records = spark.read
-      .parquet(ex_choice_table).as[ExChoiceRecord]
+      .parquet(ex_choice_table)
+      .withColumnRenamed("ev_a", "source")
+      .withColumnRenamed("ev_b", "target")
+      .as[ExChoiceRecord]
     val co_existence_records = spark.read.parquet(co_existence_table)
+      .withColumnRenamed("ev_a", "source")
+      .withColumnRenamed("ev_b", "target")
       .as[CoExistenceRecord]
 
     // calculating ex-choices
     val ex_choices = ex_choice_records
-      .groupBy("ev_a", "ev_b")
+      .groupBy("source", "target")
       .agg(functions.collect_list("trace_id").alias("trace_ids"))
-      .select("ev_a", "ev_b", "trace_ids")
+      .select("source", "target", "trace_ids")
 
     // calculating response
     val response = co_existence_records
-      .groupBy("ev_a", "ev_b")
+      .groupBy("source", "target")
       .agg(functions.collect_list("trace_id").alias("trace_ids"))
-      .select("ev_a", "ev_b", "trace_ids")
+      .select("source", "target", "trace_ids")
 
     val choice = response
       .unionByName(ex_choices)
-      .groupBy("ev_a", "ev_b")
+      .groupBy("source", "target")
       .agg(functions.flatten(functions.collect_list("trace_ids")).alias("combined_trace_ids"))
       .select(
-        functions.col("ev_a"),
-        functions.col("ev_b"),
+        functions.col("source"),
+        functions.col("target"),
         functions.array_distinct(functions.col("combined_trace_ids")).alias("trace_ids")
       )
 
@@ -535,24 +544,24 @@ object DeclareMining {
     val co_exist = ex_choices
       .withColumn("trace_ids", substract_traces(col("trace_ids")))
       .select(
-        col("ev_a"),
-        col("ev_b"),
+        col("source"),
+        col("target"),
         col("trace_ids")
       )
 
     val not_co_exist = response
       .withColumn("trace_ids", substract_traces(col("trace_ids")))
       .select(
-        col("ev_a"),
-        col("ev_b"),
+        col("source"),
+        col("target"),
         col("trace_ids")
       )
 
-    result = result ++ ex_choices.collect().map(x => ("ex-choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
-    result = result ++ co_exist.collect().map(x => ("co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
-    result = result ++ not_co_exist.collect().map(x => ("not co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
-    result = result ++ choice.collect().map(x => ("choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
-    result = result ++ response.collect().map(x => ("responded existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toArray))
+    result = result ++ ex_choices.collect().map(x => ("ex-choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toSet))
+    result = result ++ co_exist.collect().map(x => ("co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toSet))
+    result = result ++ not_co_exist.collect().map(x => ("not co-existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toSet))
+    result = result ++ choice.collect().map(x => ("choice", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toSet))
+    result = result ++ response.collect().map(x => ("responded existence", x.getString(0) + "|" + x.getString(1), x.getSeq[String](2).toSet))
     
     // Clean up broadcast variable
     allTracesBroadcast.unpersist()
@@ -592,7 +601,7 @@ object DeclareMining {
                      filterRare: Boolean,
                      filterBounded: Boolean,
                      hardRediscover: Boolean
-                    ): Array[(String, String, Array[String])] = {
+                    ): Array[(String, String, Set[String])] = {
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
@@ -610,7 +619,7 @@ object DeclareMining {
     oldConstraints.cache()
     val oldConstraintsLookup = oldConstraints.rdd
       .filter(_.rule == "response")
-      .map(c => ((c.trace, c.eventA, c.eventB), true))
+      .map(c => ((c.trace_id, c.source, c.target), true))
       .collectAsMap()
     val bOldConstraintsLookup = spark.sparkContext.broadcast(oldConstraintsLookup)
     
@@ -618,9 +627,9 @@ object DeclareMining {
     val oldPrecedenceConstraints = oldConstraints
       .filter(_.rule == "precedence")
       .collect()
-      .groupBy(_.trace)
+      .groupBy(_.trace_id)
 
-    val evolvedTraces = affectedEvents.rdd.groupBy(_.trace)
+    val evolvedTraces = affectedEvents.rdd.groupBy(_.trace_id)
 
     def extractResponseRelations(traceId: String, orderedEvents: Seq[Event]): Seq[PairConstraintRow] = {
       val n = orderedEvents.length
@@ -630,18 +639,18 @@ object DeclareMining {
       // Traverse in reverse and populate suffixFutureEvents
       for (i <- (n - 1) to 0 by -1) {
         suffixFutureEvents(i) = futureEvents
-        futureEvents += orderedEvents(i).eventType
+        futureEvents += orderedEvents(i).event_type
       }
 
       // Get all distinct event types
-      val eventTypes = orderedEvents.map(_.eventType).distinct
+      val eventTypes = orderedEvents.map(_.event_type).distinct
       val results = collection.mutable.ListBuffer.empty[PairConstraintRow]
 
       for {
         a <- eventTypes
         b <- eventTypes
         aPositions = orderedEvents.zipWithIndex.collect {
-          case (e, idx) if e.eventType == a => idx
+          case (e, idx) if e.event_type == a => idx
         }
         if aPositions.nonEmpty
         if aPositions.forall(idx => suffixFutureEvents(idx).contains(b))
@@ -659,10 +668,10 @@ object DeclareMining {
           var isValid = true
 
           for (e <- trace if isValid) {
-            if (e.eventType == eventA) {
+            if (e.event_type == eventA) {
               aSeen = true
             }
-            if (e.eventType == eventB && !aSeen) {
+            if (e.event_type == eventB && !aSeen) {
               isValid = false // A `B` occurred before any `A`
             }
           }
@@ -714,16 +723,16 @@ object DeclareMining {
 
           val evolvedTracePart = orderedEvents.filter(x => x.pos >= bounds._1 && x.pos <= bounds._2)
 
-          val oldEventTypes = if (bounds._1 > 0) orderedEvents.filter(x => x.pos <= bounds._1 - 1).map(_.eventType).toSet else Set.empty[String]
-          val evolvedEventTypes = evolvedTracePart.map(_.eventType).toSet
+          val oldEventTypes = if (bounds._1 > 0) orderedEvents.filter(x => x.pos <= bounds._1 - 1).map(_.event_type).toSet else Set.empty[String]
+          val evolvedEventTypes = evolvedTracePart.map(_.event_type).toSet
 
           // Response relations are extracted from the evolved part of the trace
           // and the old response relations are updated with the new ones
           // to include the new event types that were not present in the old response relations.
           val newResponses = extractResponseRelations(traceId, evolvedTracePart).distinct.filterNot { x =>
-            oldEventTypes.contains(x.eventA) &&
-              oldEventTypes.contains(x.eventB) &&
-              !bOldConstraintsLookup.value.contains((traceId, x.eventA, x.eventB))}
+            oldEventTypes.contains(x.source) &&
+              oldEventTypes.contains(x.target) &&
+              !bOldConstraintsLookup.value.contains((traceId, x.source, x.target))}
           val newEventTypes = evolvedEventTypes diff oldEventTypes
           val crossNewResponses = oldEventTypes.flatMap { eventA =>
             newEventTypes.map { eventB =>
@@ -741,14 +750,14 @@ object DeclareMining {
 
           // Precedence relations are extracted from the whole trace
           val newPrecedences = extractPrecedenceRelations(evolvedTracePart, newResponses).distinct.filterNot { x =>
-            oldEventTypes.contains(x.eventA) &&
-              oldEventTypes.contains(x.eventB) &&
-              !bOldConstraintsLookup.value.contains((traceId, x.eventA, x.eventB))}
+            oldEventTypes.contains(x.source) &&
+              oldEventTypes.contains(x.target) &&
+              !bOldConstraintsLookup.value.contains((traceId, x.source, x.target))}
           val validOldPrecedences = oldPrecedenceConstraints.getOrElse(traceId, Array.empty)
-            .map { case PairConstraintRow(_, eventA, eventB, _) =>
-              if (!evolvedEventTypes.contains(eventB) || !evolvedEventTypes.contains(eventA))
-                Some(PairConstraintRow("precedence", eventA, eventB, traceId))
-//              else if (newPrecedences.exists(p => p.eventA == eventA && p.eventB == eventB && p.trace == traceId))
+            .map { case PairConstraintRow(_, source, target, _) =>
+              if (!evolvedEventTypes.contains(target) || !evolvedEventTypes.contains(source))
+                Some(PairConstraintRow("precedence", source, target, traceId))
+//              else if (newPrecedences.exists(p => p.source == source && p.target == target && p.trace == traceId))
 //                None // newPrecedences will determine if the precedence relation is valid in the evolved part
               else
                 None
@@ -763,8 +772,8 @@ object DeclareMining {
 
           // Succession relations are extracted from the response and precedence relations
           val succession: Seq[PairConstraintRow] =
-            ((response.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect precedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
-              .map { case (eventA, eventB, trace) => PairConstraintRow("succession", eventA, eventB, trace) }).toSeq
+            ((response.map(r => (r.source, r.target, r.trace_id)).toSet intersect precedence.map(p => (p.source, p.target, p.trace_id)).toSet)
+              .map { case (source, target, trace_id) => PairConstraintRow("succession", source, target, trace_id) }).toSeq
 
           val alternateResponse: Seq[PairConstraintRow] =
             response.flatMap {
@@ -772,8 +781,8 @@ object DeclareMining {
                 var aOpen = false // whether an A is waiting for a B
                 var isSatisfied = true
 
-                for (e <- orderedEvents if isSatisfied && (e.eventType == eventA || e.eventType == eventB)) {
-                  e.eventType match {
+                for (e <- orderedEvents if isSatisfied && (e.event_type == eventA || e.event_type == eventB)) {
+                  e.event_type match {
                     case `eventA` =>
                       if (aOpen) isSatisfied = false // Previous A didn't get a B before this A
                       else aOpen = true // Start waiting for a B
@@ -794,8 +803,8 @@ object DeclareMining {
                 var aSeen = false // waiting for a B to close the A
                 var isSatisfied = true
 
-                for (e <- orderedEvents if isSatisfied && (e.eventType == eventA || e.eventType == eventB)) {
-                  e.eventType match {
+                for (e <- orderedEvents if isSatisfied && (e.event_type == eventA || e.event_type == eventB)) {
+                  e.event_type match {
                     case `eventA` =>
                       aSeen = true // an A opens a precedence "slot" waiting for a B
                     case `eventB` =>
@@ -809,8 +818,8 @@ object DeclareMining {
             }
 
           val alternateSuccession: Seq[PairConstraintRow] =
-            (alternateResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect alternatePrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
-              .map { case (eventA, eventB, trace) => PairConstraintRow("alternate-succession", eventA, eventB, trace) }.toSeq
+            (alternateResponse.map(r => (r.source, r.target, r.trace_id)).toSet intersect alternatePrecedence.map(p => (p.source, p.target, p.trace_id)).toSet)
+              .map { case (source, target, trace_id) => PairConstraintRow("alternate-succession", source, target, trace_id) }.toSeq
 
           val stats = computeTraceStats(orderedEvents)
           val chainResponse = extractChainResponse(traceId, stats, alternateResponse)
@@ -818,8 +827,8 @@ object DeclareMining {
 
 
           val chainSuccession: Seq[PairConstraintRow] =
-            (chainResponse.map(r => (r.eventA, r.eventB, r.trace)).toSet intersect chainPrecedence.map(p => (p.eventA, p.eventB, p.trace)).toSet)
-              .map { case (eventA, eventB, trace) => PairConstraintRow("chain-succession", eventA, eventB, trace) }.toSeq
+            (chainResponse.map(r => (r.source, r.target, r.trace_id)).toSet intersect chainPrecedence.map(p => (p.source, p.target, p.trace_id)).toSet)
+              .map { case (source, target, trace_id) => PairConstraintRow("chain-succession", source, target, trace_id) }.toSeq
 
           response ++ precedence ++ succession ++
             alternateResponse ++ alternatePrecedence ++ alternateSuccession ++
@@ -829,14 +838,14 @@ object DeclareMining {
     // Find negative constraints
     val notSuccession: Dataset[PairConstraintRow] = newConstraints.rdd
       .filter(_.rule == "response")
-      .groupBy(x => (x.eventA, x.eventB))
-      .map(x => (x._1._1, x._1._2, x._2.map(_.trace).toSet))
+      .groupBy(x => (x.source, x.target))
+      .map(x => (x._1._1, x._1._2, x._2.map(_.trace_id).toSet))
       .map(x => (x._1, x._2, bTraceIds.value diff x._3))
       .flatMap(x => x._3.map(y => PairConstraintRow("not-succession", x._1, x._2, y)))
       .toDS()
 
     val unchangedOldConstraints: Dataset[PairConstraintRow] = oldConstraints
-      .filter(x => bEvolvedTracesBounds.value.getOrElse(x.trace, (-1, -1))._2 == -1)
+      .filter(x => bEvolvedTracesBounds.value.getOrElse(x.trace_id, (-1, -1))._2 == -1)
       .as[PairConstraintRow]
 
     // Write updated constraints back to s3
@@ -847,20 +856,20 @@ object DeclareMining {
     updatedConstraints.persist(StorageLevel.MEMORY_AND_DISK)
     updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
 
-    // Group by rule, eventA, eventB and collect traces
+    // Group by rule, source, target and collect traces
     val pairConstraints: Dataset[PairConstraint] = updatedConstraints
       .union(notSuccession)
-      .groupBy("rule", "eventA", "eventB")
-      .agg(collect_list($"trace").as("traces"))
+      .groupBy("rule", "source", "target")
+      .agg(collect_list($"trace_id").as("traces"))
       .as[PairConstraint]
     pairConstraints.persist(StorageLevel.MEMORY_AND_DISK)
     updatedConstraints.unpersist()
 
     // compute constraints using support and branching and collect them
-    var constraints: Array[(String, String, Array[String])] = pairConstraints.collect().flatMap { x =>
-      val support = x.traces.toSet.size.toDouble / bTraceIds.value.size
+    var constraints: Array[(String, String, Set[String])] = pairConstraints.collect().flatMap { x =>
+      val support = x.traces.size.toDouble / bTraceIds.value.size
       if (support > supportThreshold)
-        Some((x.rule, x.eventA + "|" + x.eventB, x.traces.distinct))
+        Some((x.rule, x.source + "|" + x.target, x.traces))
       else
         None
     }
@@ -885,14 +894,14 @@ object DeclareMining {
   }
 
   private def computeTraceStats(orderedEvents: Seq[Event]): TraceStats = {
-    // total occurrences of each eventType
+    // total occurrences of each event_type
     val totalCount = orderedEvents.foldLeft(Map.empty[String, Int].withDefaultValue(0)) {
-      case (counts, e) => counts.updated(e.eventType, counts(e.eventType) + 1)
+      case (counts, e) => counts.updated(e.event_type, counts(e.event_type) + 1)
     }
 
     // adjacent (x,y) counts
     val adjacentCount = orderedEvents
-      .map(_.eventType)
+      .map(_.event_type)
       .sliding(2)
       .foldLeft(Map.empty[(String, String), Int].withDefaultValue(0)) {
         case (counts, Seq(a, b)) =>

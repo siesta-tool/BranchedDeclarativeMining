@@ -59,14 +59,14 @@ object FullBranching {
       // Generate source candidates in parallel
       val sourceCands: ParSeq[(LogicalOp, Set[String])] =
         LogicalOp.values.par.flatMap { opS =>
-          generateCandidateSets(pcList.map(_.eventA).toSet, opS, relatedSets, freqMap)
+          generateCandidateSets(pcList.map(_.source).toSet, opS, relatedSets, freqMap)
             .map(s => (opS, s))
         }.toList.par
 
       // Extend to full branch and filter
       sourceCands.flatMap { case (opS, sources) =>
         LogicalOp.values.par.flatMap { opT =>
-          generateCandidateSets(pcList.map(_.eventB).toSet, opT, relatedSets, freqMap).flatMap { targets =>
+          generateCandidateSets(pcList.map(_.target).toSet, opT, relatedSets, freqMap).flatMap { targets =>
             val (support, confidence) = computeMetrics(sources, opS, targets, opT, relatedSets)
             if (support >= sigmaThresh && confidence >= kappaThresh)
               Some(BranchConstraint(rule, sources, opS, targets, opT, support, confidence))
@@ -153,8 +153,8 @@ object FullBranching {
 
     val s3Connector = new S3Connector()
     s3Connector.initialize("log_t5e5")
-    val traceMap = s3Connector.get_events_sequence_table().rdd.map(x => (x.trace, x.eventType)).groupBy(_._1).mapValues(_.map(_._2).toArray).collect().toMap
-    val freqMap = s3Connector.get_index_table().rdd.map(x => (x.eventA, x.trace_id)).groupBy(_._1).mapValues(_.size.toDouble).collect().toMap
+    val traceMap = s3Connector.get_events_sequence_table().rdd.map(x => (x.trace_id, x.event_type)).groupBy(_._1).mapValues(_.map(_._2).toArray).collect().toMap
+    val freqMap = s3Connector.get_index_table().rdd.map(x => (x.source, x.trace_id)).groupBy(_._1).mapValues(_.size.toDouble).collect().toMap
     val pcs: Seq[PairConstraint] = pairConstraints.collect().toSeq
 
     // Invoke mining

@@ -18,13 +18,13 @@ object BranchedDeclare {
                                        branchingBound: Int = 2,
                                        dropFactor: Double = 2.5,
                                        filterUnderBound: Boolean = false,
-                                       filterRare: Boolean = false): Array[(String, String, Array[String])] = {
+                                       filterRare: Boolean = false): Array[(String, String, Set[String])] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
     // Group the constraints by rule
     val result = constraints.groupByKey(_.rule).mapGroups { case (rule, iter) =>
-      val eventMap = iter.map(c => (c.eventType, c.traces.toSet)).toSeq
+      val eventMap = iter.map(c => (c.event_type, c.traces.toSet)).toSeq
 
       // Compute frequent traces for "AND" and "XOR" branching if needed
       val frequentTraces = if (!filterRare && policy != "OR")
@@ -47,8 +47,8 @@ object BranchedDeclare {
       }
       val events = result.flatMap(_._1)   // Extract event names
       val traces = result.flatMap(_._2)   // Extract associated trace sets
-      (rule, events.toArray, traces.toArray)
-    }.filter(_._3.length.toDouble  > support)
+      (rule, events.toArray, traces.toSet)
+    }.filter(_._3.size.toDouble  > support)
 
     if (filterUnderBound)
       result.filter(_._2.length == branchingBound).map(x => (x._1, x._2.mkString(","), x._3)).collect()
@@ -64,7 +64,7 @@ object BranchedDeclare {
                                      branchingBound: Int = 2,
                                      dropFactor: Double = 2.5,
                                      filterUnderBound: Boolean = false,
-                                     filterRare: Boolean = false): Array[(String, String, Array[String])] = {
+                                     filterRare: Boolean = false): Array[(String, String, Set[String])] = {
     if (branchingType == "TARGET")
         getTargetBranchedConstraints(constraints, totalTraces, support, branchingBound, policy, filterRare =
         filterRare, dropFactor = dropFactor, filterBounded = filterUnderBound)
@@ -88,7 +88,7 @@ object BranchedDeclare {
                                            dropFactor: Double = 2.5,
                                            filterBounded: Boolean = false,
                                            filterRare: Boolean = false,
-                                           printNum: Boolean = false): Array[(String, String, Array[String])] = {
+                                           printNum: Boolean = false): Array[(String, String, Set[String])] = {
       val spark = SparkSession.builder().getOrCreate()
       import spark.implicits._
 
@@ -139,11 +139,11 @@ object BranchedDeclare {
 //          val totalUniqueTraces = targetTraces.distinct.size.toDouble
 
           // Create a TargetBranchedConstraint for the rule and its source event
-          TargetBranchedPairConstraint(rule, activationEvent, targetEvents.toArray, targetTraces.distinct.toArray)
-        }.filter(_.traces.length > threshold)
+          TargetBranchedPairConstraint(rule, activationEvent, targetEvents.toArray, targetTraces.toSet)
+        }.filter(_.traces.size > threshold)
 
     if (printNum)
-      println(s"$policy # = " + groupedConstraints.filter(_.traces.length > threshold).count())
+      println(s"$policy # = " + groupedConstraints.filter(_.traces.size > threshold).count())
 
     var result = groupedConstraints
     if (filterBounded)
@@ -160,7 +160,7 @@ object BranchedDeclare {
                                            dropFactor: Double = 2.5,
                                            filterBounded: Boolean = false,
                                            filterRare: Boolean = false,
-                                           printNum: Boolean = false): Array[(String, String, Array[String])] = {
+                                           printNum: Boolean = false): Array[(String, String, Set[String])] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -213,12 +213,12 @@ object BranchedDeclare {
           rule = rule,
           sources = sourceEvents.toArray,
           target = targetEvent,
-          traces = sourceTraces.distinct.toArray
+          traces = sourceTraces.toSet
         )
-      }.filter(_.traces.length > threshold)
+      }.filter(_.traces.size > threshold)
 
     if (printNum)
-      println(s"$policy # = " + groupedConstraints.filter(_.traces.length >= threshold).count())
+      println(s"$policy # = " + groupedConstraints.filter(_.traces.size >= threshold).count())
 
     var result = groupedConstraints
     if (filterBounded)
@@ -234,7 +234,7 @@ object BranchedDeclare {
                                           dropFactor: Double = 2.5,
                                           filterBounded: Boolean = false,
                                           filterRare: Boolean = false,
-                                          printNum: Boolean = false): Array[(String, String, Array[String])] = {
+                                          printNum: Boolean = false): Array[(String, String, Set[String])] = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
@@ -320,9 +320,9 @@ object BranchedDeclare {
             rule = rule,
             sources = sourcesToBeAdded.map(_._1).toArray ++ Array(sourceEvent),
             targets = targetsToBeAdded.map(_._1).toArray ++ Array(targetEvent),
-            traces = currentSupport.toArray
+            traces = currentSupport
           )
-        }.filter(_.traces.length > threshold)
+        }.filter(_.traces.size > threshold)
       }.map(x => (x.rule, x.sources.mkString(",") + "|" + x.targets.mkString(","), x.traces)).collect()
   }
 
@@ -334,15 +334,15 @@ object BranchedDeclare {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
 
-    // Explode traces to create individual rows for (rule, eventA, eventB, trace)
+    // Explode traces to create individual rows for (rule, source, target, trace)
     val exploded = constraints
-      .withColumn("trace", explode($"traces"))
-      .select($"rule", $"eventA", $"eventB", $"trace")
+      .withColumn("trace_id", explode($"traces"))
+      .select($"rule", $"source", $"target", $"trace_id")
 
-    // Compute unique traces for each (rule, eventA, eventB)
+    // Compute unique traces for each (rule, source, target)
     val traceCounts = exploded
-      .groupBy($"rule", $"eventA", $"eventB")
-      .agg(collect_set($"trace").as("uniqueTraces"))
+      .groupBy($"rule", $"source", $"target")
+      .agg(collect_set($"trace_id").as("uniqueTraces"))
     traceCounts
   }
 
