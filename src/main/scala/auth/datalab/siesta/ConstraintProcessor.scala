@@ -17,7 +17,7 @@ class ConstraintProcessor {
    * @return Structured mining result with grouped constraints
    */
   def processConstraints(
-    rawConstraints: TraversableOnce[(String, String, Array[String])],
+    rawConstraints: TraversableOnce[(String, String, Set[String])],
     totalTraces: Int,
     logName: String
   ): MiningResult = {
@@ -27,7 +27,7 @@ class ConstraintProcessor {
     
     rawConstraints.foreach { case (rule, info, traces) =>
       totalConstraintCount += 1
-      val supportValue = traces.length.toDouble / totalTraces
+      val supportValue = traces.size.toDouble / totalTraces
       val constraint = parseConstraintInfo(info, traces.toSeq, supportValue)
       constraintsByRule.getOrElseUpdate(rule, ListBuffer[Constraint]()) += constraint
     }
@@ -62,7 +62,7 @@ class ConstraintProcessor {
           Constraint(
             source = parts(0),
             target = None,
-            number = Some(parts(1).toInt),
+            instances = Some(parts(1).toInt),
             traces = traces,
             support = support
           )
@@ -71,7 +71,7 @@ class ConstraintProcessor {
           Constraint(
             source = parts(0),
             target = Some(parts(1)),
-            number = None,
+            instances = None,
             traces = traces,
             support = support
           )
@@ -81,7 +81,7 @@ class ConstraintProcessor {
         Constraint(
           source = info,
           target = None,
-          number = None,
+          instances = None,
           traces = traces,
           support = support
         )
@@ -91,7 +91,7 @@ class ConstraintProcessor {
       Constraint(
         source = info,
         target = None,
-        number = None,
+        instances = None,
         traces = traces,
         support = support
       )

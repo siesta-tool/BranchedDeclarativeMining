@@ -51,22 +51,22 @@ object Structs {
     }
   }
 
-  case class PairFull(eventA:String,eventB:String,trace_id:String,positionA:Int,positionB:Int)
+  case class PairFull(source:String,target:String,trace_id:String,positionA:Int,positionB:Int)
 
-  case class Event(eventType:String, ts:String, pos:Int, trace:String)
+  case class Event(event_type:String, timestamp:String, pos:Int, trace_id:String)
 
-  case class PositionConstraint(rule: String, eventType: String, traces: Array[String])
-  case class PositionConstraintRow(rule: String, eventType: String, trace: String)
+  case class PositionConstraint(rule: String, event_type: String, traces: Set[String])
+  case class PositionConstraintRow(rule: String, event_type: String, trace_id: String)
 
-  case class ExChoiceRecord(trace_id: String, ev_a: String, ev_b: String, found: Int)
-  case class CoExistenceRecord(trace_id: String, ev_a: String, ev_b: String)
+  case class ExChoiceRecord(trace_id: String, source: String, target: String, found: Int)
+  case class CoExistenceRecord(trace_id: String, source: String, target: String)
 
   // each activity existed exactly <instances> times in these <traces>
-  case class ExactlyConstraint(rule: String, eventType:String, instances:Long, traces:Array[String])
-  case class ExactlyConstraintRow(rule:String, eventType:String, instances:Long, trace:String)
+  case class ExactlyConstraint(rule: String, event_type:String, instances:Long, traces:Set[String])
+  case class ExactlyConstraintRow(rule:String, event_type:String, instances:Long, trace_id:String)
 
-  case class PairConstraintRow(rule: String, eventA: String, eventB: String, trace: String)
-  case class PairConstraint(rule:String, eventA:String, eventB:String, traces:Array[String])
+  case class PairConstraintRow(rule: String, source: String, target: String, trace_id: String)
+  case class PairConstraint(rule:String, source:String, target:String, traces:Set[String])
 
   case class TraceStats( totalCount: Map[String, Int], adjacentCount: Map[(String, String), Int])
 
@@ -75,7 +75,7 @@ object Structs {
    rule: String,
    source: String,
    targets: Array[String],
-   traces: Array[String]
+   traces: Set[String]
   ) extends Serializable
 
   // Source-branched constraint with multiple sources and a single target
@@ -83,21 +83,21 @@ object Structs {
    rule: String,
    sources: Array[String],
    target: String,
-   traces: Array[String]
+   traces: Set[String]
   ) extends Serializable
 
   case class FullBranchedPairConstraint(
     rule: String,
     sources: Array[String],
     targets: Array[String],
-    traces: Array[String]
+    traces: Set[String]
   ) extends Serializable
 
   // JSON output structures for constraint mining results
   case class Constraint(
     source: String,
     target: Option[String],
-    number: Option[Int],
+    instances: Option[Int],
     traces: Seq[String],
     support: Double
   )

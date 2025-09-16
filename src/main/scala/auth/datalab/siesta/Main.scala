@@ -34,20 +34,20 @@ object Main {
           val events: Dataset[Event] = s3Connector.get_events_sequence_table()
           events.persist(StorageLevel.MEMORY_AND_DISK)
 
-          val traceIds: Set[String] = events.select("trace").distinct().rdd.map(x => x.getAs[String]("trace")).collect().toSet
+          val traceIds: Set[String] = events.select("trace_id").distinct().rdd.map(x => x.getAs[String]("trace_id")).collect().toSet
           val bTraceIds = spark.sparkContext.broadcast(traceIds)
 
           /** Retain separately only the newly arrived events */
           val prevMiningTs = metaData.last_declare_mined
           val newEvents: Dataset[Event] = if (prevMiningTs.isEmpty || hardRediscover) events
-                          else events.filter(e => {Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.ts))})
+                          else events.filter(e => {Timestamp.valueOf(prevMiningTs).before(Timestamp.valueOf(e.timestamp))})
 //                          else events.filter(e => {true})
 
           /** Distinguish traces that only evolved; the bounds include the new events */
           val evolvedTracesBounds: scala.collection.Map[String, (Int, Int)] = newEvents
-            .groupBy("trace")
+            .groupBy("trace_id")
             .agg(functions.min("pos"), functions.max("pos"))
-            .map(x => (x.getAs[String]("trace"), (x.getAs[Int]("min(pos)"), x.getAs[Int]("max(pos)"))))
+            .map(x => (x.getAs[String]("trace_id"), (x.getAs[Int]("min(pos)"), x.getAs[Int]("max(pos)"))))
             .rdd
             .keyBy(_._1)
             .mapValues(_._2)
@@ -59,7 +59,7 @@ object Main {
           /**
            * Retain the all events that belong to an evolved trace since already-mined constraints may be affected from these traces
            */
-          val affectedEvents = events.filter(functions.col("trace").isin(bEvolvedTracesIds.value:_*))
+          val affectedEvents = events.filter(functions.col("trace_id").isin(bEvolvedTracesIds.value:_*))
           affectedEvents.count()
           affectedEvents.persist(StorageLevel.MEMORY_AND_DISK)
 
@@ -111,7 +111,7 @@ object Main {
 
         if (!newEvents.isEmpty) {
           metaData.last_declare_mined = events.rdd  //not newEvents; maybe the batch does not follow temporal order
-            .map(x => Timestamp.valueOf(x.ts)).reduce((x, y) => { if (x.after(y)) x else y }).toString
+            .map(x => Timestamp.valueOf(x.timestamp)).reduce((x, y) => { if (x.after(y)) x else y }).toString
           s3Connector.write_metadata(metaData)
         }
       case _ =>
