@@ -295,7 +295,7 @@ object AndBranchingMiner {
       constraints: Dataset[PairConstraint],
       minSupport: Double,
       maxTargets: Int,
-      swap: Boolean = false
+      swap: Boolean = false,
     ): Dataset[PairConstraint] = {
     
     val spark = SparkSession.builder().getOrCreate()
@@ -305,7 +305,7 @@ object AndBranchingMiner {
     if (swap) {
       // Swap source and target in constraints for source-branching
       val swapped = constraints.map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
-      return andMine(swapped, minSupport, maxTargets)
+      return andMine(swapped, minSupport, maxTargets).map(c => PairConstraint(c.rule, c.source, c.target, c.traces))
     }
 
 
