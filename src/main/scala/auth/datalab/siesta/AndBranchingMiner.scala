@@ -291,16 +291,23 @@ object AndBranchingMiner {
   }
 
 
-
-  def mineBest(
+  def andMine(
       constraints: Dataset[PairConstraint],
       minSupport: Double,
-      maxTargets: Int
+      maxTargets: Int,
+      swap: Boolean = false
     ): Dataset[PairConstraint] = {
     
     val spark = SparkSession.builder().getOrCreate()
 
     import spark.implicits._
+    
+    if (swap) {
+      // Swap source and target in constraints for source-branching
+      val swapped = constraints.map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
+      return andMine(swapped, minSupport, maxTargets)
+    }
+
 
     // Collect all distinct trace IDs and assign integer indices once (driver).
     val allTraces: Array[String] = constraints.flatMap(_.traces).distinct.collect()
