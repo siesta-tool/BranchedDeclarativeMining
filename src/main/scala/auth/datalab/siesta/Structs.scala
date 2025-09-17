@@ -125,4 +125,11 @@ object Structs {
     allEventTypes: Set[String],
     totalTraces: Long
   )
+
+  case class PairConstraintBits(
+  rule: String,
+  source: String,
+  target: String,
+  tracesBits: Array[Int]
+  ) extends Serializable
 }

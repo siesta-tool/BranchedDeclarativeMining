@@ -23,45 +23,45 @@ object DeclareMining {
    */
   def mine(config: Config, context: MiningContext): Array[(String, String, Set[String])] = {
     
-    // Extract position constraints
-    val position = extractPositionConstraints(
-      logName = context.metaData.log_name,
-      affectedEvents = context.affectedEvents,
-      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-      supportThreshold = config.support,
-      totalTraces = context.totalTraces,
-      branchingPolicy = config.getEffectiveBranchingPolicy,
-      branchingBound = config.branchingBound,
-      filterRare = config.filterRare,
-      dropFactor = config.dropFactor,
-      filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false,
-      hardRediscover = config.hardRediscovery
-    )
+    // // Extract position constraints
+    // val position = extractPositionConstraints(
+    //   logName = context.metaData.log_name,
+    //   affectedEvents = context.affectedEvents,
+    //   bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+    //   supportThreshold = config.support,
+    //   totalTraces = context.totalTraces,
+    //   branchingPolicy = config.getEffectiveBranchingPolicy,
+    //   branchingBound = config.branchingBound,
+    //   filterRare = config.filterRare,
+    //   dropFactor = config.dropFactor,
+    //   filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false,
+    //   hardRediscover = config.hardRediscovery
+    // )
     
-    // Extract existence constraints
-    val existence = extractExistenceConstraints(
-      logName = context.metaData.log_name,
-      affectedEvents = context.affectedEvents,
-      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-      supportThreshold = config.support,
-      totalTraces = context.totalTraces,
-      bTraceIds = context.bTraceIds,
-      branchingPolicy = config.getEffectiveBranchingPolicy,
-      branchingBound = config.branchingBound,
-      filterRare = config.filterRare,
-      dropFactor = config.dropFactor,
-      filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false
-    )
+    // // Extract existence constraints
+    // val existence = extractExistenceConstraints(
+    //   logName = context.metaData.log_name,
+    //   affectedEvents = context.affectedEvents,
+    //   bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+    //   supportThreshold = config.support,
+    //   totalTraces = context.totalTraces,
+    //   bTraceIds = context.bTraceIds,
+    //   branchingPolicy = config.getEffectiveBranchingPolicy,
+    //   branchingBound = config.branchingBound,
+    //   filterRare = config.filterRare,
+    //   dropFactor = config.dropFactor,
+    //   filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false
+    // )
     
-    // Maintain unordered state and extract unordered constraints
-    incrementally_maintain_unorder_state(
-      context.metaData, 
-      context.bEvolvedTracesBounds, 
-      context.newEvents, 
-      context.allEventTypes, 
-      context.affectedEvents
-    )
-    val unorder = extractUnordered(context.metaData)
+    // // Maintain unordered state and extract unordered constraints
+    // incrementally_maintain_unorder_state(
+    //   context.metaData, 
+    //   context.bEvolvedTracesBounds, 
+    //   context.newEvents, 
+    //   context.allEventTypes, 
+    //   context.affectedEvents
+    // )
+    // val unorder = extractUnordered(context.metaData)
     
     // Extract ordered constraints
     val ordered = extractOrdered(
@@ -81,7 +81,7 @@ object DeclareMining {
     )
     
     // Combine all constraints
-    ordered.union(position).union(existence).union(unorder)
+    ordered//.union(position).union(existence).union(unorder)
   }
 
   /**
@@ -875,15 +875,16 @@ object DeclareMining {
     }
 
     if (Utilities.isBranchingEnabled(branchingPolicy))
-      constraints = BranchedDeclare.extractBranchedPairConstraints(pairConstraints,
-        totalTraces,
-        supportThreshold,
-        branchingPolicy,
-        branchingType,
-        branchingBound,
-        dropFactor = dropFactor,
-        filterRare = filterRare,
-        filterUnderBound = filterBounded)
+      constraints = AndBranchingMiner.mineBest(pairConstraints,supportThreshold,branchingBound)
+        // BranchedDeclare.extractBranchedPairConstraints(pairConstraints,
+        // totalTraces,
+        // supportThreshold,
+        // branchingPolicy,
+        // branchingType,
+        // branchingBound,
+        // dropFactor = dropFactor,
+        // filterRare = filterRare,
+        // filterUnderBound = filterBounded)
     pairConstraints.unpersist()
     
     // Clean up broadcast variables and cached data
