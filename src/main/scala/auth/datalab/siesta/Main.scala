@@ -29,7 +29,7 @@ object Main {
         val spark = SparkSession.builder().getOrCreate()
         import spark.implicits._
 
-        val (miningResult, traceIds, events, newEvents) = spark.time({
+        val (events, newEvents) = spark.time({
           /** Extract all preprocessed events of the log from S3 */
           val events: Dataset[Event] = s3Connector.get_events_sequence_table()
           events.persist(StorageLevel.MEMORY_AND_DISK)
@@ -60,8 +60,6 @@ object Main {
            * Retain the all events that belong to an evolved trace since already-mined constraints may be affected from these traces
            */
           val affectedEvents = events.filter(functions.col("trace_id").isin(bEvolvedTracesIds.value:_*))
-          affectedEvents.count()
-          affectedEvents.persist(StorageLevel.MEMORY_AND_DISK)
 
           val allEventTypes = s3Connector.get_single_table().rdd.groupBy(_._1).keys.collect().toSet
 
@@ -80,34 +78,32 @@ object Main {
           val allConstraints = DeclareMining.mine(config, miningContext)
 
           events.unpersist()
-          affectedEvents.unpersist()
 
-          // Process constraints using the dedicated processor
-          val constraintProcessor = new ConstraintProcessor()
-          val miningResult = constraintProcessor.processConstraints(
-            allConstraints, 
-            traceIds.size, 
-            config.logName
-          )
+          // // Process constraints using the dedicated processor
+          // val constraintProcessor = new ConstraintProcessor()
+          // val miningResult = constraintProcessor.processConstraints(
+          //   allConstraints, 
+          //   traceIds.size, 
+          //   config.logName
+          // )
 
-          println("Constraints mined: " + miningResult.totalConstraints)
 
-          (miningResult, traceIds, events, newEvents)
+          (events, newEvents)
         })
 
         // Generate output using the dedicated writer (outside of spark.time)
-        val outputWriter = new JsonOutputWriter()
-        val jsonFile = outputWriter.generateFileName(
-          config.logName, 
-          config.support, 
-          config.branchingBound, 
-          config.getEffectiveBranchingPolicy,
-          config,
-          config.outputPath
-        )
+        // val outputWriter = new JsonOutputWriter()
+        // val jsonFile = outputWriter.generateFileName(
+        //   config.logName, 
+        //   config.support, 
+        //   config.branchingBound, 
+        //   config.getEffectiveBranchingPolicy,
+        //   config,
+        //   config.outputPath
+        // )
         
-        outputWriter.writeToFile(miningResult, jsonFile)
-        println(s"Results written to: $jsonFile")
+        // outputWriter.writeToFile(miningResult, jsonFile)
+        // println(s"Results written to: $jsonFile")
 
         if (!newEvents.isEmpty) {
           metaData.last_declare_mined = events.rdd  //not newEvents; maybe the batch does not follow temporal order
