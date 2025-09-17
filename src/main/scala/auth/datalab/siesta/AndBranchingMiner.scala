@@ -14,7 +14,7 @@ object AndBranchingMiner {
       constraints: Dataset[PairConstraint],
       minSupport: Double,
       maxTargets: Int
-    ): Array[(String, String, Set[String])] = {
+    ): Dataset[PairConstraint] = {
     
     val spark = SparkSession.builder().getOrCreate()
 
@@ -158,7 +158,6 @@ object AndBranchingMiner {
 
         bestConstraint
     }
-    .map(bc => (bc.rule, bc.source + "|" + bc.targets.mkString(","), bc.traces))
-    .collect()
+    .map(bc => PairConstraint(bc.rule, bc.source, bc.targets.mkString(","), bc.traces))
   }
 }
