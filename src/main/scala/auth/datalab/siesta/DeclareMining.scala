@@ -84,7 +84,7 @@ object DeclareMining {
     //   context.allEventTypes,
     //   affectedEvents
     // )
-    // extractUnordered(context.metaData, outputPath = config.outputPath)
+    // val unordered = extractUnordered(context.metaData, outputPath = config.outputPath)
 
     // Extract ordered constraints
     extractOrdered(
@@ -104,7 +104,7 @@ object DeclareMining {
       hardRediscover = config.hardRediscovery,
       outputPath = config.outputPath
     )
-
+    
     // Merge all individual JSON files into a single consolidated file
     mergeConstraintJsonFiles(config, context.metaData.log_name)
 
@@ -1171,7 +1171,7 @@ object DeclareMining {
 
     // compute constraints using support and branching and collect them
     (if(Utilities.isBranchingEnabled(branchingPolicy)) 
-      AndBranchingMiner.mineBest(pairConstraints, supportThreshold, branchingBound)
+      AndBranchingMiner.mineBest(pairConstraints, supportThreshold * totalTraces, branchingBound)
     else 
       pairConstraints
     ).map(c => (
@@ -1181,6 +1181,7 @@ object DeclareMining {
       c.traces,
       c.traces.size.toDouble / totalTraces))
     .toDF("rule", "source", "target", "traces", "support")
+    .filter(row => row.getAs[Double]("support") >= supportThreshold)
     .write
     .mode(SaveMode.Overwrite)
     .json(s"./$outputPath/$logName/ordered.json")
