@@ -1170,8 +1170,8 @@ object DeclareMining {
     updatedConstraints.unpersist()
 
     // compute constraints using support and branching and collect them
-    (if(Utilities.isBranchingEnabled(branchingPolicy)) 
-      AndBranchingMiner.mineBest(pairConstraints, supportThreshold * totalTraces, branchingBound)
+    (if(Utilities.isBranchingEnabled(branchingPolicy))
+      AndBranchingMiner.andMine(pairConstraints, supportThreshold * totalTraces, branchingBound, swap = branchingType.toLowerCase == "source")
     else 
       pairConstraints
     ).map(c => (
@@ -1181,6 +1181,13 @@ object DeclareMining {
       c.traces,
       c.traces.size.toDouble / totalTraces))
     .toDF("rule", "source", "target", "traces", "support")
+    .transform(df =>
+      if (branchingType.toLowerCase == "source")
+        df.withColumnRenamed("source", "target_temp")
+          .withColumnRenamed("target", "source")
+          .withColumnRenamed("target_temp", "target")
+      else df)
+    .select("rule", "source", "target", "traces", "support")
     .filter(row => row.getAs[Double]("support") >= supportThreshold)
     .write
     .mode(SaveMode.Overwrite)
