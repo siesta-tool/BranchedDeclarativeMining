@@ -41,50 +41,50 @@ object DeclareMining {
 
     val affectedEvents = context.affectedEvents.cache()
 
-    // // Extract position constraints
-    // extractPositionConstraints(
-    //   logName = context.metaData.log_name,
-    //   affectedEvents = affectedEvents,
-    //   bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-    //   supportThreshold = config.support,
-    //   totalTraces = context.totalTraces,
-    //   branchingPolicy = config.getEffectiveBranchingPolicy,
-    //   branchingBound = config.branchingBound,
-    //   filterRare = config.filterRare,
-    //   dropFactor = config.dropFactor,
-    //   filterUnderBound =
-    //     if (config.branchingBound > 0) config.filterUnderBound else false,
-    //   hardRediscover = config.hardRediscovery,
-    //   outputPath = config.outputPath
-    // )
+    // Extract position constraints
+    extractPositionConstraints(
+      logName = context.metaData.log_name,
+      affectedEvents = affectedEvents,
+      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+      supportThreshold = config.support,
+      totalTraces = context.totalTraces,
+      branchingPolicy = config.getEffectiveBranchingPolicy,
+      branchingBound = config.branchingBound,
+      filterRare = config.filterRare,
+      dropFactor = config.dropFactor,
+      filterUnderBound =
+        if (config.branchingBound > 0) config.filterUnderBound else false,
+      hardRediscover = config.hardRediscovery,
+      outputPath = config.outputPath
+    )
 
-    // // Extract existence constraints
-    // extractExistenceConstraints(
-    //   logName = context.metaData.log_name,
-    //   affectedEvents = affectedEvents,
-    //   bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-    //   supportThreshold = config.support,
-    //   totalTraces = context.totalTraces,
-    //   bTraceIds = context.bTraceIds,
-    //   branchingPolicy = config.getEffectiveBranchingPolicy,
-    //   branchingBound = config.branchingBound,
-    //   filterRare = config.filterRare,
-    //   dropFactor = config.dropFactor,
-    //   filterUnderBound =
-    //     if (config.branchingBound > 0) config.filterUnderBound else false,
-    //   hardRediscover = config.hardRediscovery,
-    //   outputPath = config.outputPath
-    // )
+    // Extract existence constraints
+    extractExistenceConstraints(
+      logName = context.metaData.log_name,
+      affectedEvents = affectedEvents,
+      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+      supportThreshold = config.support,
+      totalTraces = context.totalTraces,
+      bTraceIds = context.bTraceIds,
+      branchingPolicy = config.getEffectiveBranchingPolicy,
+      branchingBound = config.branchingBound,
+      filterRare = config.filterRare,
+      dropFactor = config.dropFactor,
+      filterUnderBound =
+        if (config.branchingBound > 0) config.filterUnderBound else false,
+      hardRediscover = config.hardRediscovery,
+      outputPath = config.outputPath
+    )
 
-    // // Maintain unordered state and extract unordered constraints
-    // incrementally_maintain_unorder_state(
-    //   context.metaData,
-    //   context.bEvolvedTracesBounds,
-    //   context.newEvents,
-    //   context.allEventTypes,
-    //   affectedEvents
-    // )
-    // val unordered = extractUnordered(context.metaData, outputPath = config.outputPath)
+    // Maintain unordered state and extract unordered constraints
+    incrementally_maintain_unorder_state(
+      context.metaData,
+      context.bEvolvedTracesBounds,
+      context.newEvents,
+      context.allEventTypes,
+      affectedEvents
+    )
+    val unordered = extractUnordered(context.metaData, outputPath = config.outputPath)
 
     // Extract ordered constraints
     extractOrdered(
@@ -216,7 +216,7 @@ object DeclareMining {
       .toDF("rule", "event_type", "traces", "support")
       .write
       .mode(SaveMode.Overwrite)
-      .json(s"./$outputPath/$logName/position.json")
+      .json(Paths.get(outputPath, logName, "position.json").toString)
 
     // else {
     //   BranchedDeclare.extractBranchedSingleConstraints(result, totalTraces, supportThreshold, branchingPolicy,
@@ -311,7 +311,7 @@ object DeclareMining {
       .toDF("rule", "event_type", "instances", "traces", "support")
       .write
       .mode(SaveMode.Overwrite)
-      .json(s"./$outputPath/$logName/existence.json")
+      .json(Paths.get(outputPath, logName, "existence.json").toString)
 
     // else {
     // We consider the existence constraints implicitly as pair constraints (target = instances),
@@ -775,7 +775,7 @@ object DeclareMining {
       .toDF("rule", "source", "target", "traces", "support")
       .write
       .mode(SaveMode.Overwrite)
-      .json(s"./$outputPath/${metaData.log_name}/unordered.json")
+      .json(Paths.get(outputPath, metaData.log_name, "unordered.json").toString)
   }
 
   private def overwriteParquetAtomic(
@@ -1181,17 +1181,10 @@ object DeclareMining {
       c.traces,
       c.traces.size.toDouble / totalTraces))
     .toDF("rule", "source", "target", "traces", "support")
-    .transform(df =>
-      if (branchingType.toLowerCase == "source")
-        df.withColumnRenamed("source", "target_temp")
-          .withColumnRenamed("target", "source")
-          .withColumnRenamed("target_temp", "target")
-      else df)
-    .select("rule", "source", "target", "traces", "support")
     .filter(row => row.getAs[Double]("support") >= supportThreshold)
     .write
     .mode(SaveMode.Overwrite)
-    .json(s"./$outputPath/$logName/ordered.json")
+    .json(Paths.get(outputPath, logName, "ordered.json").toString)
 
     pairConstraints.unpersist()
     bOldConstraintsLookup.unpersist()
