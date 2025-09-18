@@ -305,7 +305,7 @@ object AndBranchingMiner {
     if (swap) {
       // Swap source and target in constraints for source-branching
       val swapped = constraints.map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
-      return andMine(swapped, minSupport, maxTargets).map(c => PairConstraint(c.rule, c.source, c.target, c.traces))
+      return andMine(swapped, minSupport, maxTargets).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
     }
 
 

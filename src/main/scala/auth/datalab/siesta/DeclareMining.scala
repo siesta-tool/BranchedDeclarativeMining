@@ -84,7 +84,7 @@ object DeclareMining {
       context.allEventTypes,
       affectedEvents
     )
-    val unordered = extractUnordered(context.metaData, outputPath = config.outputPath)
+    val unordered = extractUnordered(context.metaData, outputPath = config.outputPath, bTraceIds = context.bTraceIds, totalTraces = context.totalTraces, support = config.support)
 
     // Extract ordered constraints
     extractOrdered(
@@ -652,7 +652,7 @@ object DeclareMining {
     }
   }
 
-  def extractUnordered(metaData: MetaData, outputPath: String): Unit = {
+  def extractUnordered(metaData: MetaData, outputPath: String, bTraceIds: Broadcast[Set[String]], totalTraces: Long, support: Double): Unit = {
     val ex_choice_table =
       s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
     val co_existence_table =
@@ -701,18 +701,10 @@ object DeclareMining {
 
     //  For the next we need the negatives, so we need a complete list of all the available traces
     val seq_table = s"""s3a://siesta/${metaData.log_name}/seq.parquet/"""
-    val all_traces = spark.read
-      .parquet(seq_table)
-      .select("trace_id")
-      .distinct()
-      .collect()
-      .map(_.getString(0))
-      .toSet
-    val allTracesBroadcast = spark.sparkContext.broadcast(all_traces)
 
     // UDF to subtract the trace_ids from the full set, used in co-exist and not-co-exist
     val substract_traces = udf { (traceList: Seq[String]) =>
-      allTracesBroadcast.value.diff(traceList.toSet).toSeq
+      bTraceIds.value.diff(traceList.toSet).toSeq
     }
 
     // Co-exist records is calculated by removing for each pair, the traces that exist in the ex-choice records
@@ -733,46 +725,56 @@ object DeclareMining {
       )
 
     ex_choices
+      .filter(col("source").isNotNull && col("target").isNotNull && col("source") =!= "" && col("target") =!= "")
       .map(x =>
-        ("ex-choice", x.getString(0), x.getString(1), x.getSeq[String](2).toSet)
+        ("ex-choice", x.getAs[String]("source"), x.getAs[String]("target"), x.getAs[Seq[String]]("trace_ids").toSet)
       )
       .union(
-        co_exist.map(x =>
-          (
-            "co-existence",
-            x.getString(0),
-            x.getString(1),
-            x.getSeq[String](2).toSet
+        co_exist
+          .filter(col("source").isNotNull && col("target").isNotNull && col("source") =!= "" && col("target") =!= "")
+          .map(x =>
+            (
+              "co-existence",
+              x.getAs[String]("source"),
+              x.getAs[String]("target"),
+              x.getAs[Seq[String]]("trace_ids").toSet
+            )
           )
-        )
       )
       .union(
-        not_co_exist.map(x =>
-          (
-            "not co-existence",
-            x.getString(0),
-            x.getString(1),
-            x.getSeq[String](2).toSet
+        not_co_exist
+          .filter(col("source").isNotNull && col("target").isNotNull && col("source") =!= "" && col("target") =!= "")
+          .map(x =>
+            (
+              "not co-existence",
+              x.getAs[String]("source"),
+              x.getAs[String]("target"),
+              x.getAs[Seq[String]]("trace_ids").toSet
+            )
           )
-        )
       )
       .union(
-        choice.map(x =>
-          ("choice", x.getString(0), x.getString(1), x.getSeq[String](2).toSet)
-        )
-      )
-      .union(
-        response.map(x =>
-          (
-            "responded existence",
-            x.getString(0),
-            x.getString(1),
-            x.getSeq[String](2).toSet
+        choice
+          .filter(col("source").isNotNull && col("target").isNotNull && col("source") =!= "" && col("target") =!= "")
+          .map(x =>
+            ("choice", x.getAs[String]("source"), x.getAs[String]("target"), x.getAs[Seq[String]]("trace_ids").toSet)
           )
-        )
       )
-      .map(c => (c._1, c._2, c._3, c._4, c._4.size.toDouble / all_traces.size))
+      .union(
+        response
+          .filter(col("source").isNotNull && col("target").isNotNull && col("source") =!= "" && col("target") =!= "")
+          .map(x =>
+            (
+              "responded existence",
+              x.getAs[String]("source"),
+              x.getAs[String]("target"),
+              x.getAs[Seq[String]]("trace_ids").toSet
+            )
+          )
+      )
+      .map(c => (c._1, c._2, c._3, c._4, c._4.size.toDouble / totalTraces))
       .toDF("rule", "source", "target", "traces", "support")
+      .filter(col("support") > support)
       .write
       .mode(SaveMode.Overwrite)
       .json(Paths.get(outputPath, metaData.log_name, "unordered.json").toString)
