@@ -29,7 +29,7 @@ import java.io.{File, FileWriter, BufferedWriter}
 import java.nio.file.{Files, Paths}
 import scala.io.Source
 
-object DeclareMining {
+object DeclareMiner {
 
   /** Centralized mining method that extracts all constraint types
     * @param config

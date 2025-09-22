@@ -265,151 +265,13 @@ object XORBranchingMiner {
     }
   }
 
-  private def chainMining(
-      rule: String,
-      allConstraints: Array[PairConstraint], 
-      minSupport: Double, 
-      maxTargets: Int,
-      traceToInt: Map[String, Int],
-      intToTrace: Array[String],
-      dropFactor: Option[Double]
-    ): Seq[PairConstraint] = {
-    
-    // Helper: from BitSet -> (support, Set[String])
-    def supportAndTraces(bits: BitSet): (Int, Set[String]) = {
-      val idxs: Array[Int] = bits.stream().toArray 
-      val traces: Set[String] = idxs.map(i => intToTrace(i)).toSet
-      (idxs.length, traces)
-    }
 
-    // Convert constraints to BitSet representation
-    def constraintToBits(constraint: PairConstraint): BitSet = {
-      val bits = new BitSet()
-      val idxs = constraint.traces.flatMap(t => traceToInt.get(t))
-      idxs.foreach(bits.set)
-      bits
-    }
-
-    // Create a lookup: (source, target) -> BitSet for efficient chain building
-    val chainLookup: Map[(String, String), BitSet] = 
-      allConstraints.map(c => (c.source, c.target) -> constraintToBits(c)).toMap
-
-    // Group by source to get starting points, but use level-wise approach like original
-    val startingConstraints = allConstraints.groupBy(_.source)
-    
-    val allValidChains = scala.collection.mutable.ArrayBuffer[PairConstraint]()
-
-    // Check if we're in unbounded mode
-    val isUnbounded = maxTargets == Int.MaxValue
-
-    startingConstraints.foreach { case (startSource, constraints) =>
-      // Track incremental drop statistics (only when needed for unbounded mode with drop monitoring)
-      var dropStats = DropStats(0, 0.0, 0.0)
-      var prevSupports: Option[Seq[Double]] = None
-      
-      // Level 1: Single constraints (A -> B)
-      var currentLevel: Seq[(List[String], BitSet)] = constraints
-        .map { c => 
-          val bits = constraintToBits(c)
-          (List(c.source, c.target), bits)
-        }
-        .filter { case (_, bits) => bits.cardinality() > minSupport }
-        .toSeq
-
-      // Record initial support only for unbounded mode with drop monitoring
-      if (isUnbounded && dropFactor.isDefined && currentLevel.nonEmpty) {
-        prevSupports = Some(currentLevel.map(_._2.cardinality().toDouble))
-      }
-
-      var allCandidates = currentLevel.toBuffer
-      var k = 2
-
-      // Level-wise expansion
-      while (currentLevel.nonEmpty && k <= maxTargets) {
-        val nextLevelBuilder = scala.collection.mutable.ArrayBuffer[(List[String], BitSet)]()
-        
-        // For each current chain, try to extend it by one step
-        currentLevel.foreach { case (currentChain, currentBits) =>
-          val lastTarget = currentChain.last
-          
-          // Look for constraints where lastTarget -> nextTarget exists
-          chainLookup.foreach { case ((source, target), nextBits) =>
-            if (source == lastTarget && !currentChain.contains(target)) {
-              // Found a valid extension: lastTarget -> target
-              val extendedChain = currentChain :+ target
-              val chainBits = currentBits.clone().asInstanceOf[BitSet]
-              chainBits.xor(nextBits)
-              
-              if (chainBits.cardinality() > minSupport) {
-                nextLevelBuilder += ((extendedChain, chainBits))
-              }
-            }
-          }
-        }
-        
-        // Deduplicate and prune (similar to your original approach)
-        val prunedLevel = nextLevelBuilder
-          .groupBy(_._1) // group by chain
-          .map { case (chain, candidates) =>
-            // If multiple candidates for same chain, take intersection
-            val combinedBits = candidates.map(_._2).reduce { (a, b) =>
-              val c = a.clone().asInstanceOf[BitSet]
-              c.xor(b)
-              c
-            }
-            (chain, combinedBits)
-          }
-          .toSeq
-          .filter { case (_, bits) => bits.cardinality() > minSupport }
-          .sortBy(_._1.mkString(",")) // deterministic order
-        
-        allCandidates ++= prunedLevel
-        currentLevel = prunedLevel
-        
-        // For unbounded mode with drop monitoring, track support and check for major drops
-        if (isUnbounded && currentLevel.nonEmpty && dropFactor.isDefined && prevSupports.isDefined) {
-          val currentSupports = currentLevel.map(_._2.cardinality().toDouble)
-          
-          // Update drop statistics incrementally and check if we should stop
-          val (shouldStop, updatedStats) = shouldStopExtension(
-            prevSupports.get, currentSupports, dropStats, dropFactor.get
-          )
-          dropStats = updatedStats
-          prevSupports = Some(currentSupports)
-          
-          if (shouldStop) {
-            currentLevel = Seq.empty  // Stop expansion
-          }
-        }
-        
-        k += 1
-      }
-
-      // Convert valid chains to PairConstraints
-      allCandidates.foreach { case (chain, bits) =>
-        if (chain.length >= 2) { // Only chains with at least 2 elements (source and 1st target)
-          val (_, traces) = supportAndTraces(bits)
-          val chainTargets = chain.tail // Remove source, keep only targets in chain
-          allValidChains += PairConstraint(rule, startSource, chainTargets.mkString(","), traces)
-        }
-      }
-    }
-
-    // Filter chains to keep only the best chain for each (rule, source) pair - consistent with regular constraints
-    val filteredChains = allValidChains
-      .groupBy(c => (c.rule, c.source))
-      .map { case (_, chains) =>
-        // Pick the chain with highest support, then longest target set, then lexicographic
-        chains.maxBy(c => (c.traces.size, c.target.split(",").length, c.target))
-      }
-      .toSeq
-    
-    filteredChains
-  }
 
 
   /**
-   * AND mining with support for both bounded and unbounded target set extension.
+   * XOR mining with support for both bounded and unbounded target set extension.
+   * Unlike AND mining, XOR treats all constraints (including chains) the same way
+   * since XOR operates on individual constraint satisfaction.
    * 
    * @param constraints Input constraints dataset
    * @param minSupport Minimum support threshold for valid constraints
@@ -418,7 +280,7 @@ object XORBranchingMiner {
    * @param dropFactor Optional factor controlling major drop detection in unbounded mode.
    *                   If None, unbounded extension continues until support threshold or no more candidates.
    *                   If Some(value), uses drop monitoring with threshold = avg_drop + (value * std_dev_of_drops)
-   * @return Dataset of mined AND-branched constraints
+   * @return Dataset of mined XOR-branched constraints
    * 
    * Usage examples:
    * - Bounded: xorMine(constraints, 0.1, maxTargets = 5)
@@ -459,13 +321,9 @@ object XORBranchingMiner {
     val bcTraceToInt = spark.sparkContext.broadcast(traceToInt)
     val bcIntToTrace = spark.sparkContext.broadcast(intToTrace)
 
-    // For chain rules, we need a different approach that considers all constraints
-    // First, separate chain rules from regular rules
-    val chainConstraints = constraints.filter(_.rule.startsWith("chain"))
-    val regularConstraints = constraints.filter(!_.rule.startsWith("chain"))
-
-    // Process regular constraints with the existing algorithm
-    val regularResults = regularConstraints
+    // For XOR, all constraints (including chains) are processed the same way
+    // since XOR operates on individual constraint satisfaction
+    val results = constraints
       .groupByKey(c => (c.rule, c.source))
       .mapGroups { case ((rule, source), iter) =>
         val singles = iter.toSeq
@@ -485,28 +343,6 @@ object XORBranchingMiner {
       .map(_.get)
       .map(bc => PairConstraint(bc.rule, bc.source, bc.targets.mkString(","), bc.traces))
 
-    // Process chain constraints with a more distributed approach
-    val chainResults = if (chainConstraints.count() > 0) {
-      // Broadcast trace mappings for use in executors
-      val bcTraceToIntForChain = spark.sparkContext.broadcast(traceToInt)
-      val bcIntToTraceForChain = spark.sparkContext.broadcast(intToTrace)
-      
-      // Group by rule and process each rule's constraints in parallel
-      chainConstraints
-        .groupByKey(_.rule)
-        .mapGroups { (rule, constraintsIter) =>
-          // Collect constraints for this specific rule only
-          val ruleConstraints = constraintsIter.toArray
-          // Run chain mining for this rule's constraints
-          chainMining(rule, ruleConstraints, minSupport, maxTargets, 
-                      bcTraceToIntForChain.value, bcIntToTraceForChain.value, dropFactor)
-        }
-        .flatMap(identity(_)) // Flatten the results
-    } else {
-      spark.emptyDataset[PairConstraint]
-    }
-
-    // Union the results - filtering is now done in the mining methods
-    regularResults.union(chainResults)
+    results
   }
 }

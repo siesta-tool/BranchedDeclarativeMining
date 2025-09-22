@@ -75,7 +75,7 @@ object Main {
           )
 
           // Mine all constraints using the centralized method
-          val allConstraints = DeclareMining.mine(config, miningContext)
+          val allConstraints = DeclareMiner.mine(config, miningContext)
 
           events.unpersist()
 
