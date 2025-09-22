@@ -196,7 +196,7 @@ object XORBranchingMiner {
                 // but we intersect to be safe)
                 val combined = seq.map(_._2).reduce { (a, b) =>
                     val c = a.clone().asInstanceOf[BitSet]
-                    c.xor(b)
+                    c.and(b)
                     c
                 }
                 (targetsList, combined)
@@ -308,7 +308,7 @@ object XORBranchingMiner {
     if (isUnary.getOrElse(false)) {
       // For unary constraints, we treat source as none
       val unaryConstraints = constraints.map(c => PairConstraint(c.rule, "", c.source, c.traces))
-      return xorMine(unaryConstraints, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.source, c.target, c.traces))
+      return xorMine(unaryConstraints, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
     }
 
     // Collect all distinct trace IDs and assign integer indices once (driver).
