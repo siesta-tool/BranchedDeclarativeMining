@@ -1,6 +1,6 @@
 package auth.datalab.siesta.utils
 
-import auth.datalab.siesta.model.Structs.{Config, Event, MetaData, PairFull}
+import auth.datalab.siesta.model.Structs.{Config, Event, MetaData, PairFull, BranchingPolicy, BranchingType}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import scopt.OParser
@@ -11,7 +11,6 @@ object Utilities {
 
   /**
    * Read environment variable
-   *p
    * @param key The key of the variable
    * @return The variable
    * @throws NullPointerException if the variable does not exist
@@ -60,8 +59,8 @@ object Utilities {
     println(s"[Support]\t\t${config.support}")
 
     if (config.isBranchingEnabled) {
-      println(s"[Branching]\t\tPolicy=${config.getEffectiveBranchingPolicy}, " +
-        s"Type=${config.getEffectiveBranchingType}, " +
+      println(s"[Branching]\t\tPolicy=${config.getBranchingPolicyName}, " +
+        s"Type=${config.getBranchingTypeName}, " +
         s"Bound=${if(config.branchingBound != Int.MaxValue) config.branchingBound else "None"}, " +
         s"Drop=${config.dropFactor.getOrElse("None")}, " +
         s"FilterRare=${config.filterRare}, " +
@@ -87,7 +86,7 @@ object Utilities {
    * @return true if branching should be applied
    */
   def isBranchingEnabled(branchingPolicy: String): Boolean = {
-    branchingPolicy != null && branchingPolicy.trim.nonEmpty && branchingPolicy.trim.toLowerCase != "none"
+    BranchingPolicy.fromString(branchingPolicy).isDefined
   }
 
   /**
@@ -112,12 +111,12 @@ object Utilities {
         .text("Support value, default is 0"),
 
       opt[String]('p', "branchingPolicy")
-        .action((x, c) => c.copy(branchingPolicy = x))
-        .text("Branching policy, default is null"),
+        .action((x, c) => c.copy(branchingPolicy = BranchingPolicy.fromString(x)))
+        .text("Branching policy (AND, OR, XOR), default is None"),
 
       opt[String]('t', "branchingType")
-        .action((x, c) => c.copy(branchingType = x.toUpperCase))
-        .text("Branching type, default is 'TARGET' if policy is set"),
+        .action((x, c) => c.copy(branchingType = Some(BranchingType.fromString(x))))
+        .text("Branching type (SOURCE, TARGET), required when using branching policy"),
 
       opt[Int]('b', "branchingBound")
         .action((x, c) => c.copy(branchingBound = x))

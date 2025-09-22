@@ -81,31 +81,8 @@ object Main {
 
           events.unpersist()
 
-          // // Process constraints using the dedicated processor
-          // val constraintProcessor = new ConstraintProcessor()
-          // val miningResult = constraintProcessor.processConstraints(
-          //   allConstraints, 
-          //   traceIds.size, 
-          //   config.logName
-          // )
-
-
           (events, newEvents)
         })
-
-        // Generate output using the dedicated writer (outside of spark.time)
-        // val outputWriter = new JsonOutputWriter()
-        // val jsonFile = outputWriter.generateFileName(
-        //   config.logName, 
-        //   config.support, 
-        //   config.branchingBound, 
-        //   config.getEffectiveBranchingPolicy,
-        //   config,
-        //   config.outputPath
-        // )
-        
-        // outputWriter.writeToFile(miningResult, jsonFile)
-        // println(s"Results written to: $jsonFile")
 
         if (!newEvents.isEmpty) {
           metaData.last_declare_mined = events.rdd  //not newEvents; maybe the batch does not follow temporal order

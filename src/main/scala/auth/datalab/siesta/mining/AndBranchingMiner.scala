@@ -5,8 +5,6 @@ import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairCons
 import org.apache.spark.sql.{Dataset, SparkSession}
 import java.util.BitSet
 import scala.jdk.CollectionConverters._
-import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairConstraint}
-
 
 object AndBranchingMiner {
 
