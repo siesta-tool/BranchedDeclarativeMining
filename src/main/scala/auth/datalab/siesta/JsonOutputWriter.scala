@@ -75,16 +75,17 @@ class JsonOutputWriter {
       val policyLetter = config.getEffectiveBranchingPolicy.toLowerCase.take(1)
       val typeLetter = config.getEffectiveBranchingType.toLowerCase.take(1) // "s" for source, "t" for target
       
-      if (branchingBound > 0) {
+      if (branchingBound != Int.MaxValue) {
         parts += s"${typeLetter}${policyLetter}${branchingBound}"
       } else {
         parts += s"${typeLetter}${policyLetter}"
       }
     }
     
-    // Drop factor (only if not default)
-    if (config.dropFactor != 1.5) {
-      parts += f"d${config.dropFactor}%.1f".replace(".", "")
+    // Drop factor (only if defined)
+    config.dropFactor match {
+      case Some(d) => parts += f"d${d}%.1f".replace(".", "")
+      case None => // do nothing
     }
     
     // Filters
