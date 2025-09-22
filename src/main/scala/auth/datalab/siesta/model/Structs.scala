@@ -1,4 +1,4 @@
-package auth.datalab.siesta
+package auth.datalab.siesta.model
 
 import org.apache.spark.sql.Dataset
 import org.apache.spark.broadcast.Broadcast

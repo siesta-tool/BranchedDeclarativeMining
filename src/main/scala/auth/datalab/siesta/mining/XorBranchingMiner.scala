@@ -1,11 +1,11 @@
-package auth.datalab.siesta
+package auth.datalab.siesta.mining
 
 
-import auth.datalab.siesta.Structs.{PairConstraint, TargetBranchedPairConstraint, PairConstraintBits}
+import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairConstraint, PairConstraintBits}
 import org.apache.spark.sql.{Dataset, SparkSession}
 import java.util.BitSet
 import scala.jdk.CollectionConverters._
-import auth.datalab.siesta.Structs.{PairConstraint, TargetBranchedPairConstraint}
+import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairConstraint}
 
 
 object XORBranchingMiner {

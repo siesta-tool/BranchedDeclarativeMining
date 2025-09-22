@@ -1,6 +1,6 @@
-package auth.datalab.siesta
+package auth.datalab.siesta.utils
 
-import auth.datalab.siesta.Structs.{Config, Event, MetaData, PairFull}
+import auth.datalab.siesta.model.Structs.{Config, Event, MetaData, PairFull}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import scopt.OParser

@@ -1,6 +1,6 @@
-package auth.datalab.siesta
+package auth.datalab.siesta.io
 
-import auth.datalab.siesta.Structs.{Constraint, ConstraintGroup, MiningResult}
+import auth.datalab.siesta.model.Structs.{Constraint, ConstraintGroup, MiningResult}
 import org.json4s._
 import org.json4s.native.Serialization
 import org.json4s.native.Serialization.write
@@ -57,7 +57,7 @@ class JsonOutputWriter {
    * @return The generated full file path
    */
   def generateFileName(logName: String, support: Double, branchingBound: Int, branchingPolicy: String, 
-                      config: auth.datalab.siesta.Structs.Config, outputPath: String = null): String = {
+                      config: auth.datalab.siesta.model.Structs.Config, outputPath: String = null): String = {
     
     val basePath = if (outputPath != null) outputPath else config.outputPath
     val parts = scala.collection.mutable.ListBuffer[String]()
@@ -84,7 +84,7 @@ class JsonOutputWriter {
     
     // Drop factor (only if defined)
     config.dropFactor match {
-      case Some(d) => parts += f"d${d}%.1f".replace(".", "")
+      case Some(d: Double) => parts += f"d${d}%.1f".replace(".", "")
       case None => // do nothing
     }
     
