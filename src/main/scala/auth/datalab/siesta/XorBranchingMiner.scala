@@ -8,7 +8,7 @@ import scala.jdk.CollectionConverters._
 import auth.datalab.siesta.Structs.{PairConstraint, TargetBranchedPairConstraint}
 
 
-object AndBranchingMiner {
+object XORBranchingMiner {
 
   /**
    * Case class to maintain incremental statistics for support drops.
@@ -146,7 +146,7 @@ object AndBranchingMiner {
                     val newTargets = (targets1 ++ targets2).sorted // ensure canonical order
 
                     val inter = bits1.clone().asInstanceOf[BitSet]
-                    inter.and(bits2)
+                    inter.xor(bits2)
                     
                     if (inter.cardinality() > minSupport) {
                         nextBuilder += ((newTargets, inter))
@@ -175,7 +175,7 @@ object AndBranchingMiner {
                             val newTargets = (set1 ++ List(set2.last)).distinct.sorted
 
                             val inter = bits1.clone().asInstanceOf[BitSet]
-                            inter.and(bits2)
+                            inter.xor(bits2)
                             
                             if (inter.cardinality() > minSupport) {
                                 nextBuilder += ((newTargets, inter))
@@ -197,7 +197,7 @@ object AndBranchingMiner {
                 // but we intersect to be safe)
                 val combined = seq.map(_._2).reduce { (a, b) =>
                     val c = a.clone().asInstanceOf[BitSet]
-                    c.and(b)
+                    c.xor(b)
                     c
                 }
                 (targetsList, combined)
@@ -338,7 +338,7 @@ object AndBranchingMiner {
               // Found a valid extension: lastTarget -> target
               val extendedChain = currentChain :+ target
               val chainBits = currentBits.clone().asInstanceOf[BitSet]
-              chainBits.and(nextBits)
+              chainBits.xor(nextBits)
               
               if (chainBits.cardinality() > minSupport) {
                 nextLevelBuilder += ((extendedChain, chainBits))
@@ -354,7 +354,7 @@ object AndBranchingMiner {
             // If multiple candidates for same chain, take intersection
             val combinedBits = candidates.map(_._2).reduce { (a, b) =>
               val c = a.clone().asInstanceOf[BitSet]
-              c.and(b)
+              c.xor(b)
               c
             }
             (chain, combinedBits)
@@ -421,11 +421,11 @@ object AndBranchingMiner {
    * @return Dataset of mined AND-branched constraints
    * 
    * Usage examples:
-   * - Bounded: andMine(constraints, 0.1, maxTargets = 5)
-   * - Unbounded (traditional): andMine(constraints, 0.1, Int.MaxValue) 
-   * - Unbounded (with drop monitoring): andMine(constraints, 0.1, Int.MaxValue, dropFactor = Some(2.0))
+   * - Bounded: xorMine(constraints, 0.1, maxTargets = 5)
+   * - Unbounded (traditional): xorMine(constraints, 0.1, Int.MaxValue) 
+   * - Unbounded (with drop monitoring): xorMine(constraints, 0.1, Int.MaxValue, dropFactor = Some(2.0))
    */
-  def andMine(
+  def xorMine(
       constraints: Dataset[PairConstraint],
       minSupport: Double,
       maxTargets: Int,
@@ -441,15 +441,14 @@ object AndBranchingMiner {
     if (swap) {
       // Swap source and target in constraints for source-branching
       val swapped = constraints.map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
-      return andMine(swapped, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
+      return xorMine(swapped, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
     }
 
     if (isUnary.getOrElse(false)) {
       // For unary constraints, we treat source as none
       val unaryConstraints = constraints.map(c => PairConstraint(c.rule, "", c.source, c.traces))
-      return andMine(unaryConstraints, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
+      return xorMine(unaryConstraints, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.source, c.target, c.traces))
     }
-
 
     // Collect all distinct trace IDs and assign integer indices once (driver).
     val allTraces: Array[String] = constraints.flatMap(_.traces).distinct.collect()

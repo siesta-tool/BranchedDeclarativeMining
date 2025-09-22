@@ -84,7 +84,7 @@ object DeclareMining {
       context.allEventTypes,
       affectedEvents
     )
-    val unordered = extractUnordered(context.metaData, outputPath = config.outputPath, bTraceIds = context.bTraceIds, totalTraces = context.totalTraces, support = config.support)
+    extractUnordered(context.metaData, outputPath = config.outputPath, bTraceIds = context.bTraceIds, totalTraces = context.totalTraces, support = config.support, dropFactor = config.dropFactor, branchingPolicy = config.getEffectiveBranchingPolicy, branchingBound = config.branchingBound)
 
     // Extract ordered constraints
     extractOrdered(
@@ -138,18 +138,18 @@ object DeclareMining {
     *   An array of extracted position constraints.
     */
   def extractPositionConstraints(
-      logName: String,
-      affectedEvents: Dataset[Event],
-      bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-      totalTraces: Long,
-      supportThreshold: Double,
-      branchingPolicy: String,
-      branchingBound: Int,
-      dropFactor: Double,
-      filterRare: Boolean,
-      filterUnderBound: Boolean,
-      hardRediscover: Boolean,
-      outputPath: String
+    logName: String,
+    affectedEvents: Dataset[Event],
+    bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
+    totalTraces: Long,
+    supportThreshold: Double,
+    branchingPolicy: String,
+    branchingBound: Int,
+    dropFactor: Option[Double],
+    filterRare: Boolean,
+    filterUnderBound: Boolean,
+    hardRediscover: Boolean,
+    outputPath: String
   ): Unit = {
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
@@ -194,50 +194,49 @@ object DeclareMining {
     val constraints = fixedOldConstraints
       .union(newEventsConstraints)
 
-    constraints.count()
     constraints.write
       .mode(SaveMode.Overwrite)
       .parquet(positionConstraintsPath)
 
-    val result = constraints.rdd
-      .map(x => PositionConstraint(x.rule, x.event_type, Set(x.trace_id)))
-      .keyBy(x => (x.rule, x.event_type))
-      .reduceByKey((x, y) =>
-        PositionConstraint(x.rule, x.event_type, x.traces ++ y.traces)
-      )
-      .map(_._2)
-      .toDS()
+    val result = constraints
+      .groupByKey(x => (x.rule, x.event_type))
+      .mapGroups { case ((rule, event_type), rows) =>
+        val traces = rows.map(_.trace_id).toSet
+        PositionConstraint(rule, event_type, traces)
+      }
 
-    // if (!Utilities.isBranchingEnabled(branchingPolicy))
-    result
-      .map(c =>
-        (c.rule, c.event_type, c.traces, c.traces.size.toDouble / totalTraces)
+    // Convert PositionConstraint to PairConstraint for branching (treating position constraints as unary)
+    val pairConstraints = result.map(c => 
+      PairConstraint(c.rule, c.event_type, "", c.traces)
+    )
+
+    (if (Utilities.isBranchingEnabled(branchingPolicy))
+      BranchingResolver.branchMine(branchingPolicy, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor, isUnary = Some(true))
+    else 
+      pairConstraints
+    ).map(c =>
+        (c.rule, c.source, c.traces, c.traces.size.toDouble / totalTraces)
       )
       .toDF("rule", "event_type", "traces", "support")
       .write
       .mode(SaveMode.Overwrite)
       .json(Paths.get(outputPath, logName, "position.json").toString)
-
-    // else {
-    //   BranchedDeclare.extractBranchedSingleConstraints(result, totalTraces, supportThreshold, branchingPolicy,
-    //     branchingBound, dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
-    // }
   }
 
   def extractExistenceConstraints(
-      logName: String,
-      affectedEvents: Dataset[Event],
-      bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-      supportThreshold: Double,
-      totalTraces: Long,
-      bTraceIds: Broadcast[Set[String]],
-      branchingPolicy: String,
-      branchingBound: Int,
-      dropFactor: Double,
-      filterRare: Boolean,
-      filterUnderBound: Boolean,
-      hardRediscover: Boolean,
-      outputPath: String
+    logName: String,
+    affectedEvents: Dataset[Event],
+    bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
+    supportThreshold: Double,
+    totalTraces: Long,
+    bTraceIds: Broadcast[Set[String]],
+    branchingPolicy: String,
+    branchingBound: Int,
+    dropFactor: Option[Double],
+    filterRare: Boolean,
+    filterUnderBound: Boolean,
+    hardRediscover: Boolean,
+    outputPath: String
   ): Unit = {
 
     val spark = SparkSession.builder().getOrCreate()
@@ -268,38 +267,26 @@ object DeclareMining {
         bEvolvedTracesBounds.value.getOrElse(x.trace_id, (-1, -1))._2 == -1
       )
       .union(newConstraints)
-//      .join(newConstraints.select($"event_type", $"trace_id").distinct(), Seq("event_type", "trace_id"), "left_anti")
-//      .select($"rule", $"event_type", $"instances", $"trace_id")
       .as[ExactlyConstraintRow]
 
-//    val finalConstraints = newConstraints.union(filteredPreviously.select($"rule", $"event_type", $"instances", $"trace_id").as[ExactlyConstraintRow])
-
-    finalConstraints.count()
     finalConstraints.persist(StorageLevel.MEMORY_AND_DISK)
     finalConstraints.write.mode(SaveMode.Overwrite).parquet(existencePath)
 
-    val response: Dataset[ExactlyConstraint] = finalConstraints.rdd
-      .map(x => {
-        ExactlyConstraint(x.rule, x.event_type, x.instances, Set(x.trace_id))
-      })
-      .keyBy(x => (x.rule, x.event_type, x.instances))
-      .reduceByKey((x, y) =>
-        ExactlyConstraint(
-          x.rule,
-          x.event_type,
-          x.instances,
-          x.traces ++ y.traces
-        )
-      )
-      .map(_._2)
-      .toDS()
+    val response: Dataset[ExactlyConstraint] = finalConstraints
+      .groupByKey(x => (x.rule, x.event_type, x.instances))
+      .mapGroups { case ((rule, event_type, instances), rows) =>
+        ExactlyConstraint(rule, event_type, instances, rows.map(_.trace_id).toSet)
+      }
 
     val completeSingleConstraints =
       this.extractAllExistenceConstraints(response, bTraceIds)
 
-    // if (!Utilities.isBranchingEnabled(branchingPolicy))
-    completeSingleConstraints
-      .map(c =>
+    // Apply branching if enabled
+    (if (Utilities.isBranchingEnabled(branchingPolicy))
+      BranchingResolver.branchMine(branchingPolicy, completeSingleConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor)
+    else
+      completeSingleConstraints
+    ).map(c =>
         (
           c.rule,
           c.source,
@@ -309,24 +296,15 @@ object DeclareMining {
         )
       )
       .toDF("rule", "event_type", "instances", "traces", "support")
+      .filter(col("support") > supportThreshold)
       .write
       .mode(SaveMode.Overwrite)
       .json(Paths.get(outputPath, logName, "existence.json").toString)
 
-    // else {
-    // We consider the existence constraints implicitly as pair constraints (target = instances),
-    // and we use the same extraction method as for pair constraints, but we branch always for the
-    // same target (instances) -> source branching
-    //   val dummyImplicit = response.map(x => PairConstraint(x.rule, x.event_type, x.instances.toString, x.traces))
-    //   result = BranchedDeclare.extractBranchedPairConstraints(dummyImplicit, totalTraces = totalTraces, support = supportThreshold,
-    //     policy = branchingPolicy, branchingType = "SOURCE", branchingBound = branchingBound,
-    //     dropFactor = dropFactor, filterRare = filterRare, filterUnderBound = filterUnderBound)
-    // }
     finalConstraints.unpersist()
-    // result
   }
 
-  def extractAllExistenceConstraints(
+  private def extractAllExistenceConstraints(
       exactly: Dataset[ExactlyConstraint],
       bTraceIds: Broadcast[Set[String]]
   ): Dataset[PairConstraint] = {
@@ -517,6 +495,7 @@ object DeclareMining {
         case _: org.apache.spark.sql.AnalysisException =>
           spark.createDataset(Seq.empty[ExChoiceRecord])
       }
+    prev_ex_choices.cache()
     prev_ex_choices.count()
     // Detect previous ex-choice records that are now completed
     val ex_choices_to_co_existence = if (!prev_ex_choices.isEmpty) {
@@ -650,9 +629,12 @@ object DeclareMining {
     if (!wasCached) {
       complete_traces_that_changed.unpersist()
     }
+    
+    // Unpersist prev_ex_choices
+    prev_ex_choices.unpersist()
   }
 
-  def extractUnordered(metaData: MetaData, outputPath: String, bTraceIds: Broadcast[Set[String]], totalTraces: Long, support: Double): Unit = {
+  def extractUnordered(metaData: MetaData, outputPath: String, bTraceIds: Broadcast[Set[String]], totalTraces: Long, support: Double, dropFactor: Option[Double], branchingPolicy: String, branchingBound: Int): Unit = {
     val ex_choice_table =
       s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
     val co_existence_table =
@@ -724,7 +706,7 @@ object DeclareMining {
         col("trace_ids")
       )
 
-    ex_choices
+    val pairConstraints = ex_choices
       .filter(col("source").isNotNull && col("target").isNotNull && col("source") =!= "" && col("target") =!= "")
       .map(x =>
         ("ex-choice", x.getAs[String]("source"), x.getAs[String]("target"), x.getAs[Seq[String]]("trace_ids").toSet)
@@ -772,7 +754,15 @@ object DeclareMining {
             )
           )
       )
-      .map(c => (c._1, c._2, c._3, c._4, c._4.size.toDouble / totalTraces))
+      .toDF("rule", "source", "target", "traces")
+      .as[PairConstraint]
+
+      (if (Utilities.isBranchingEnabled(branchingPolicy))
+          BranchingResolver.branchMine(branchingPolicy, pairConstraints, support * totalTraces, branchingBound, swap = false, dropFactor)
+      else
+          pairConstraints
+      )
+      .map(c => (c.rule, c.source, c.target, c.traces, c.traces.size.toDouble / totalTraces))
       .toDF("rule", "source", "target", "traces", "support")
       .filter(col("support") > support)
       .write
@@ -807,20 +797,20 @@ object DeclareMining {
   }
 
   def extractOrdered(
-      logName: String,
-      affectedEvents: Dataset[Event],
-      bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
-      bTraceIds: Broadcast[Set[String]],
-      totalTraces: Long,
-      supportThreshold: Double,
-      branchingPolicy: String,
-      branchingType: String,
-      branchingBound: Int,
-      dropFactor: Double,
-      filterRare: Boolean,
-      filterBounded: Boolean,
-      hardRediscover: Boolean,
-      outputPath: String
+    logName: String,
+    affectedEvents: Dataset[Event],
+    bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
+    bTraceIds: Broadcast[Set[String]],
+    totalTraces: Long,
+    supportThreshold: Double,
+    branchingPolicy: String,
+    branchingType: String,
+    branchingBound: Int,
+    dropFactor: Option[Double],
+    filterRare: Boolean,
+    filterBounded: Boolean,
+    hardRediscover: Boolean,
+    outputPath: String
   ): Unit = {
 
     val spark = SparkSession.builder().getOrCreate()
@@ -839,10 +829,11 @@ object DeclareMining {
 
     // Cache the oldConstraints for efficient lookups without broadcasting large data
     oldConstraints.cache()
-    val oldConstraintsLookup = oldConstraints.rdd
+    val oldConstraintsLookup = oldConstraints
       .filter(_.rule == "response")
+      .collect()
       .map(c => ((c.trace_id, c.source, c.target), true))
-      .collectAsMap()
+      .toMap
     val bOldConstraintsLookup =
       spark.sparkContext.broadcast(oldConstraintsLookup)
 
@@ -852,7 +843,7 @@ object DeclareMining {
       .collect()
       .groupBy(_.trace_id)
 
-    val evolvedTraces = affectedEvents.rdd.groupBy(_.trace_id)
+    val evolvedTraces = affectedEvents.groupByKey(_.trace_id).mapGroups { case (traceId, events) => (traceId, events.toSeq) }
 
     def extractResponseRelations(
         traceId: String,
@@ -1135,7 +1126,6 @@ object DeclareMining {
           alternateResponse ++ alternatePrecedence ++ alternateSuccession ++
           chainResponse ++ chainPrecedence ++ chainSuccession
       }
-      .toDS()
 
     // Find negative constraints
     val notSuccession: Dataset[PairConstraintRow] = newConstraints.rdd
@@ -1158,7 +1148,6 @@ object DeclareMining {
     val updatedConstraints: Dataset[PairConstraintRow] = newConstraints
       .union(unchangedOldConstraints)
       .union(notSuccession)
-    updatedConstraints.count()
     updatedConstraints.persist(StorageLevel.MEMORY_AND_DISK)
     updatedConstraints.write.mode(SaveMode.Overwrite).parquet(orderPath)
 
@@ -1173,7 +1162,7 @@ object DeclareMining {
 
     // compute constraints using support and branching and collect them
     (if(Utilities.isBranchingEnabled(branchingPolicy))
-      AndBranchingMiner.andMine(pairConstraints, supportThreshold * totalTraces, branchingBound, swap = branchingType.toLowerCase == "source")
+      BranchingResolver.branchMine(branchingPolicy, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = branchingType.toLowerCase == "source", dropFactor)
     else 
       pairConstraints
     ).map(c => (

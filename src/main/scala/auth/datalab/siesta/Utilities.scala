@@ -62,8 +62,8 @@ object Utilities {
     if (config.isBranchingEnabled) {
       println(s"[Branching]\t\tPolicy=${config.getEffectiveBranchingPolicy}, " +
         s"Type=${config.getEffectiveBranchingType}, " +
-        s"Bound=${config.branchingBound}, " +
-        s"Drop=${config.dropFactor}, " +
+        s"Bound=${if(config.branchingBound != Int.MaxValue) config.branchingBound else "None"}, " +
+        s"Drop=${config.dropFactor.getOrElse("None")}, " +
         s"FilterRare=${config.filterRare}, " +
         s"FilterUnderBound=${config.filterUnderBound}")
     } else {
@@ -124,8 +124,8 @@ object Utilities {
         .text("Branching bound, default is 0"),
 
       opt[Double]('d', "dropFactor")
-        .action((x, c) => c.copy(dropFactor = x))
-        .text("Reduction Drop factor, default is 2.5"),
+        .action((x, c) => c.copy(dropFactor = Some(x)))
+        .text("Reduction Drop factor, default is None (disabled)"),
 
       opt[Boolean]('r', "filterRare")
         .action((x, c) => c.copy(filterRare = x))
