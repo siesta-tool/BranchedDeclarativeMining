@@ -1,6 +1,8 @@
-package auth.datalab.siesta
+package auth.datalab.siesta.mining
 
-import auth.datalab.siesta.Structs._
+import auth.datalab.siesta.model.Structs._
+import auth.datalab.siesta.io.JsonOutputWriter
+import auth.datalab.siesta.utils.Utilities
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD

@@ -1,7 +1,9 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.Structs.{Config, Event, MiningContext}
-import auth.datalab.siesta.Utilities.{printConfig, parseArguments}
+import auth.datalab.siesta.model.Structs.{Config, Event, MiningContext}
+import auth.datalab.siesta.utils.Utilities.{printConfig, parseArguments}
+import auth.datalab.siesta.io.S3Connector
+import auth.datalab.siesta.mining.DeclareMiner
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, SparkSession, functions}
 import org.apache.spark.storage.StorageLevel

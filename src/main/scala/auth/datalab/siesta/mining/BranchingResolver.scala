@@ -1,7 +1,7 @@
-package auth.datalab.siesta
+package auth.datalab.siesta.mining
 
 
-import auth.datalab.siesta.Structs.{PairConstraint}
+import auth.datalab.siesta.model.Structs.{PairConstraint}
 import org.apache.spark.sql.{Dataset}
 
 object BranchingResolver {
