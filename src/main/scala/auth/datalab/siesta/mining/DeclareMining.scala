@@ -145,7 +145,7 @@ object DeclareMiner {
     bEvolvedTracesBounds: Broadcast[scala.collection.Map[String, (Int, Int)]],
     totalTraces: Long,
     supportThreshold: Double,
-    branchingPolicy: String,
+    branchingPolicy: Option[BranchingPolicy],
     branchingBound: Int,
     dropFactor: Option[Double],
     filterRare: Boolean,
@@ -212,8 +212,8 @@ object DeclareMiner {
       PairConstraint(c.rule, c.event_type, "", c.traces)
     )
 
-    (if (Utilities.isBranchingEnabled(branchingPolicy))
-      BranchingResolver.branchMine(branchingPolicy, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor, isUnary = Some(true))
+    (if (branchingPolicy.isDefined)
+      BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor, isUnary = Some(true))
     else 
       pairConstraints
     ).map(c =>
@@ -232,7 +232,7 @@ object DeclareMiner {
     supportThreshold: Double,
     totalTraces: Long,
     bTraceIds: Broadcast[Set[String]],
-    branchingPolicy: String,
+    branchingPolicy: Option[BranchingPolicy],
     branchingBound: Int,
     dropFactor: Option[Double],
     filterRare: Boolean,
@@ -284,8 +284,8 @@ object DeclareMiner {
       this.extractAllExistenceConstraints(response, bTraceIds)
 
     // Apply branching if enabled
-    (if (Utilities.isBranchingEnabled(branchingPolicy))
-      BranchingResolver.branchMine(branchingPolicy, completeSingleConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor)
+    (if (branchingPolicy.isDefined)
+      BranchingResolver.branchMine(branchingPolicy.get, completeSingleConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor)
     else
       completeSingleConstraints
     ).map(c =>
@@ -636,7 +636,7 @@ object DeclareMiner {
     prev_ex_choices.unpersist()
   }
 
-  def extractUnordered(metaData: MetaData, outputPath: String, bTraceIds: Broadcast[Set[String]], totalTraces: Long, support: Double, dropFactor: Option[Double], branchingPolicy: String, branchingBound: Int): Unit = {
+  def extractUnordered(metaData: MetaData, outputPath: String, bTraceIds: Broadcast[Set[String]], totalTraces: Long, support: Double, dropFactor: Option[Double], branchingPolicy: Option[BranchingPolicy], branchingBound: Int): Unit = {
     val ex_choice_table =
       s"""s3a://siesta/${metaData.log_name}/exChoiceTable.parquet/"""
     val co_existence_table =
@@ -759,8 +759,8 @@ object DeclareMiner {
       .toDF("rule", "source", "target", "traces")
       .as[PairConstraint]
 
-      (if (Utilities.isBranchingEnabled(branchingPolicy))
-          BranchingResolver.branchMine(branchingPolicy, pairConstraints, support * totalTraces, branchingBound, swap = false, dropFactor)
+      (if (branchingPolicy.isDefined)
+          BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, support * totalTraces, branchingBound, swap = false, dropFactor)
       else
           pairConstraints
       )
@@ -805,8 +805,8 @@ object DeclareMiner {
     bTraceIds: Broadcast[Set[String]],
     totalTraces: Long,
     supportThreshold: Double,
-    branchingPolicy: String,
-    branchingType: String,
+    branchingPolicy: Option[BranchingPolicy],
+    branchingType: Option[BranchingType],
     branchingBound: Int,
     dropFactor: Option[Double],
     filterRare: Boolean,
@@ -1163,8 +1163,8 @@ object DeclareMiner {
     updatedConstraints.unpersist()
 
     // compute constraints using support and branching and collect them
-    (if(Utilities.isBranchingEnabled(branchingPolicy))
-      BranchingResolver.branchMine(branchingPolicy, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = branchingType.toLowerCase == "source", dropFactor)
+    (if(branchingPolicy.isDefined)
+      BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = branchingType.contains(BranchingType.SOURCE), dropFactor)
     else 
       pairConstraints
     ).map(c => (

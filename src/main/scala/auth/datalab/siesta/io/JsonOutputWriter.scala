@@ -56,7 +56,7 @@ class JsonOutputWriter {
    * @param outputPath The output directory path
    * @return The generated full file path
    */
-  def generateFileName(logName: String, support: Double, branchingBound: Int, branchingPolicy: String, 
+  def generateFileName(logName: String, support: Double, branchingBound: Int, branchingPolicy: Option[auth.datalab.siesta.model.Structs.BranchingPolicy], 
                       config: auth.datalab.siesta.model.Structs.Config, outputPath: String = null): String = {
     
     val basePath = if (outputPath != null) outputPath else config.outputPath
@@ -72,8 +72,8 @@ class JsonOutputWriter {
     
     // Branching configuration
     if (config.isBranchingEnabled) {
-      val policyLetter = config.getEffectiveBranchingPolicy.toLowerCase.take(1)
-      val typeLetter = config.getEffectiveBranchingType.toLowerCase.take(1) // "s" for source, "t" for target
+      val policyLetter = config.getBranchingPolicyName.toLowerCase.take(1)
+      val typeLetter = config.getBranchingTypeName.toLowerCase.take(1) // "s" for source, "t" for target
       
       if (branchingBound != Int.MaxValue) {
         parts += s"${typeLetter}${policyLetter}${branchingBound}"

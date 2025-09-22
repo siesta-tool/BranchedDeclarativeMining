@@ -4,6 +4,52 @@ import org.apache.spark.sql.Dataset
 import org.apache.spark.broadcast.Broadcast
 
 object Structs {
+  
+  /**
+   * Enumeration for branching policies used in constraint mining
+   */
+  sealed trait BranchingPolicy {
+    def name: String
+  }
+  
+  object BranchingPolicy {
+    case object AND extends BranchingPolicy { val name = "AND" }
+    case object OR extends BranchingPolicy { val name = "OR" }
+    case object XOR extends BranchingPolicy { val name = "XOR" }
+    
+    def fromString(str: String): Option[BranchingPolicy] = str match {
+      case null | "" => None
+      case s if s.trim.equalsIgnoreCase("AND") => Some(AND)
+      case s if s.trim.equalsIgnoreCase("OR") => Some(OR)
+      case s if s.trim.equalsIgnoreCase("XOR") => Some(XOR)
+      case s if s.trim.equalsIgnoreCase("NONE") => None
+      case _ => None
+    }
+    
+    def values: List[BranchingPolicy] = List(AND, OR, XOR)
+  }
+  
+  /**
+   * Enumeration for branching types used in constraint mining
+   */
+  sealed trait BranchingType {
+    def name: String
+  }
+  
+  object BranchingType {
+    case object SOURCE extends BranchingType { val name = "SOURCE" }
+    case object TARGET extends BranchingType { val name = "TARGET" }
+    
+    def fromString(str: String): BranchingType = str match {
+      case null | "" => TARGET // Default to TARGET
+      case s if s.trim.equalsIgnoreCase("SOURCE") => SOURCE
+      case s if s.trim.equalsIgnoreCase("TARGET") => TARGET
+      case _ => TARGET // Default to TARGET for invalid values
+    }
+    
+    def values: List[BranchingType] = List(SOURCE, TARGET)
+  }
+
   case class MetaData(var traces: Long, var events: Long, var pairs: Long,
                       lookback: Int, var has_previous_stored: Boolean,
                       filename: String, streaming: Boolean,log_name: String, mode: String, compression: String,
@@ -14,8 +60,8 @@ object Structs {
 
   case class Config(logName: String = "",
                     support: Double = 0,
-                    branchingPolicy: String = null,
-                    branchingType: String = "TARGET",
+                    branchingPolicy: Option[BranchingPolicy] = None,
+                    branchingType: Option[BranchingType] = None,
                     branchingBound: Int = Int.MaxValue,
                     dropFactor: Option[Double] = None,
                     filterRare: Boolean = false,
@@ -25,29 +71,39 @@ object Structs {
                     outputPath: String = "./output") {
     
     /**
-     * Determines if branching is enabled based on policy
+     * Determines if branching is enabled based on both policy and type being defined
      * @return true if branching should be applied
      */
-    def isBranchingEnabled: Boolean = branchingPolicy != null && branchingPolicy.trim.nonEmpty
+    def isBranchingEnabled: Boolean = branchingPolicy.isDefined && branchingType.isDefined
     
     /**
-     * Gets the effective branching type, defaulting to TARGET if policy is enabled
-     * @return the branching type to use, or null if branching is disabled
+     * Gets the effective branching type if branching is enabled
+     * @return the branching type to use, or None if branching is disabled
      */
-    def getEffectiveBranchingType: String = {
-      if (isBranchingEnabled) {
-        if (branchingType == null || branchingType.trim.isEmpty) "TARGET" else branchingType.toUpperCase
-      } else {
-        null
-      }
+    def getEffectiveBranchingType: Option[BranchingType] = {
+      if (isBranchingEnabled) branchingType else None
+    }
+    
+    /**
+     * Gets the branching type name as string (for backward compatibility)
+     * @return the branching type name, or null if branching is disabled
+     */
+    def getBranchingTypeName: String = {
+      if (isBranchingEnabled) branchingType.get.name else null
     }
     
     /**
      * Gets the normalized branching policy
-     * @return the branching policy in uppercase, or null if disabled
+     * @return the branching policy name, or null if disabled
      */
-    def getEffectiveBranchingPolicy: String = {
-      if (isBranchingEnabled) branchingPolicy.toUpperCase else null
+    def getEffectiveBranchingPolicy: Option[BranchingPolicy] = branchingPolicy
+    
+    /**
+     * Gets the branching policy name as string (for backward compatibility)
+     * @return the branching policy name in uppercase, or null if disabled
+     */
+    def getBranchingPolicyName: String = {
+      branchingPolicy.map(_.name).orNull
     }
   }
 
