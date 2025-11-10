@@ -1,4 +1,4 @@
-FROM openjdk:17-jdk-slim AS builder
+FROM eclipse-temurin:17-jdk AS builder
 
 RUN apt-get update && apt-get install -y gnupg2 curl scala
 RUN echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | tee /etc/apt/sources.list.d/sbt.list && \
@@ -19,7 +19,7 @@ WORKDIR /app
 RUN sbt clean assembly
 RUN mv target/scala-2.12/DeclareMiningIncrementally-assembly-0.1.0-SNAPSHOT.jar declare.jar
 
-FROM openjdk:17-jdk-slim AS execution
+FROM eclipse-temurin:17-jdk AS execution
 RUN apt-get update && apt-get install -y gnupg2 curl procps
 
 RUN curl -O https://archive.apache.org/dist/spark/spark-3.5.6/spark-3.5.6-bin-hadoop3.tgz &&\
