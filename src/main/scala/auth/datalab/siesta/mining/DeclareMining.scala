@@ -41,71 +41,143 @@ object DeclareMiner {
     */
   def mine(config: Config, context: MiningContext): Unit = {
 
+    val spark = SparkSession.builder().getOrCreate()
+    
+    // Clear any cached file metadata to force fresh S3 reads
+    // This prevents errors from stale parquet file references
+    try {
+      spark.catalog.clearCache()
+    } catch {
+      case _: Throwable => // Ignore if clear fails
+    }
+
     val affectedEvents = context.affectedEvents.cache()
+    val isAffectedEventsEmpty = affectedEvents.isEmpty
 
-    // Extract position constraints
-    extractPositionConstraints(
-      logName = context.metaData.log_name,
-      affectedEvents = affectedEvents,
-      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-      supportThreshold = config.support,
-      totalTraces = context.totalTraces,
-      branchingPolicy = config.getEffectiveBranchingPolicy,
-      branchingBound = config.branchingBound,
-      filterRare = config.filterRare,
-      dropFactor = config.dropFactor,
-      filterUnderBound =
-        if (config.branchingBound > 0) config.filterUnderBound else false,
-      hardRediscover = config.hardRediscovery,
-      outputPath = config.outputPath
-    )
+    // If no affected events and not doing hard rediscovery, skip singular constraint mining
+    // Only load existing constraints from parquet and perform branching
+    if (isAffectedEventsEmpty && !config.hardRediscovery) {
+      println(s"No affected events detected. Skipping singular constraint mining and loading existing constraints for branching only.")
+      
+      // Only perform branching on existing constraints without recalculating singular constraints
+      extractPositionConstraintsFromParquet(
+        logName = context.metaData.log_name,
+        supportThreshold = config.support,
+        totalTraces = context.totalTraces,
+        branchingPolicy = config.getEffectiveBranchingPolicy,
+        branchingBound = config.getEffectiveBranchingBound,
+        filterRare = config.filterRare,
+        dropFactor = config.dropFactor,
+        filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false,
+        outputPath = config.outputPath
+      )
+      
+      extractExistenceConstraintsFromParquet(
+        logName = context.metaData.log_name,
+        supportThreshold = config.support,
+        totalTraces = context.totalTraces,
+        bTraceIds = context.bTraceIds,
+        branchingPolicy = config.getEffectiveBranchingPolicy,
+        branchingBound = config.getEffectiveBranchingBound,
+        filterRare = config.filterRare,
+        dropFactor = config.dropFactor,
+        filterUnderBound = if (config.branchingBound > 0) config.filterUnderBound else false,
+        outputPath = config.outputPath
+      )
+      
+      // For unordered: don't call incrementally_maintain_unorder_state since there's nothing to maintain
+      // Just call extractUnordered to read from existing intermediate tables
+      extractUnordered(
+        context.metaData, 
+        outputPath = config.outputPath, 
+        bTraceIds = context.bTraceIds, 
+        totalTraces = context.totalTraces, 
+        support = config.support, 
+        dropFactor = config.dropFactor, 
+        branchingPolicy = config.getEffectiveBranchingPolicy, 
+        branchingBound = config.getEffectiveBranchingBound
+      )
+      
+      extractOrderedFromParquet(
+        logName = context.metaData.log_name,
+        bTraceIds = context.bTraceIds,
+        totalTraces = context.totalTraces,
+        supportThreshold = config.support,
+        branchingPolicy = config.getEffectiveBranchingPolicy,
+        branchingType = config.getEffectiveBranchingType,
+        branchingBound = config.getEffectiveBranchingBound,
+        filterRare = config.filterRare,
+        dropFactor = config.dropFactor,
+        filterBounded = if (config.branchingBound > 0) config.filterUnderBound else false,
+        outputPath = config.outputPath
+      )
+    } else {
+      // Normal flow: recalculate singular constraints and perform branching
+      
+      // Extract position constraints
+      extractPositionConstraints(
+        logName = context.metaData.log_name,
+        affectedEvents = affectedEvents,
+        bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+        supportThreshold = config.support,
+        totalTraces = context.totalTraces,
+        branchingPolicy = config.getEffectiveBranchingPolicy,
+        branchingBound = config.getEffectiveBranchingBound,
+        filterRare = config.filterRare,
+        dropFactor = config.dropFactor,
+        filterUnderBound =
+          if (config.branchingBound > 0) config.filterUnderBound else false,
+        hardRediscover = config.hardRediscovery,
+        outputPath = config.outputPath
+      )
 
-    // Extract existence constraints
-    extractExistenceConstraints(
-      logName = context.metaData.log_name,
-      affectedEvents = affectedEvents,
-      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-      supportThreshold = config.support,
-      totalTraces = context.totalTraces,
-      bTraceIds = context.bTraceIds,
-      branchingPolicy = config.getEffectiveBranchingPolicy,
-      branchingBound = config.branchingBound,
-      filterRare = config.filterRare,
-      dropFactor = config.dropFactor,
-      filterUnderBound =
-        if (config.branchingBound > 0) config.filterUnderBound else false,
-      hardRediscover = config.hardRediscovery,
-      outputPath = config.outputPath
-    )
+      // Extract existence constraints
+      extractExistenceConstraints(
+        logName = context.metaData.log_name,
+        affectedEvents = affectedEvents,
+        bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+        supportThreshold = config.support,
+        totalTraces = context.totalTraces,
+        bTraceIds = context.bTraceIds,
+        branchingPolicy = config.getEffectiveBranchingPolicy,
+        branchingBound = config.getEffectiveBranchingBound,
+        filterRare = config.filterRare,
+        dropFactor = config.dropFactor,
+        filterUnderBound =
+          if (config.branchingBound > 0) config.filterUnderBound else false,
+        hardRediscover = config.hardRediscovery,
+        outputPath = config.outputPath
+      )
 
-    // Maintain unordered state and extract unordered constraints
-    incrementally_maintain_unorder_state(
-      context.metaData,
-      context.bEvolvedTracesBounds,
-      context.newEvents,
-      context.allEventTypes,
-      affectedEvents
-    )
-    extractUnordered(context.metaData, outputPath = config.outputPath, bTraceIds = context.bTraceIds, totalTraces = context.totalTraces, support = config.support, dropFactor = config.dropFactor, branchingPolicy = config.getEffectiveBranchingPolicy, branchingBound = config.branchingBound)
+      // Maintain unordered state and extract unordered constraints
+      incrementally_maintain_unorder_state(
+        context.metaData,
+        context.bEvolvedTracesBounds,
+        context.newEvents,
+        context.allEventTypes,
+        affectedEvents
+      )
+      extractUnordered(context.metaData, outputPath = config.outputPath, bTraceIds = context.bTraceIds, totalTraces = context.totalTraces, support = config.support, dropFactor = config.dropFactor, branchingPolicy = config.getEffectiveBranchingPolicy, branchingBound = config.getEffectiveBranchingBound)
 
-    // Extract ordered constraints
-    extractOrdered(
-      logName = context.metaData.log_name,
-      affectedEvents = affectedEvents,
-      bEvolvedTracesBounds = context.bEvolvedTracesBounds,
-      bTraceIds = context.bTraceIds,
-      totalTraces = context.totalTraces,
-      supportThreshold = config.support,
-      branchingPolicy = config.getEffectiveBranchingPolicy,
-      branchingType = config.getEffectiveBranchingType,
-      branchingBound = config.branchingBound,
-      filterRare = config.filterRare,
-      dropFactor = config.dropFactor,
-      filterBounded =
-        if (config.branchingBound > 0) config.filterUnderBound else false,
-      hardRediscover = config.hardRediscovery,
-      outputPath = config.outputPath
-    )
+      // Extract ordered constraints
+      extractOrdered(
+        logName = context.metaData.log_name,
+        affectedEvents = affectedEvents,
+        bEvolvedTracesBounds = context.bEvolvedTracesBounds,
+        bTraceIds = context.bTraceIds,
+        totalTraces = context.totalTraces,
+        supportThreshold = config.support,
+        branchingPolicy = config.getEffectiveBranchingPolicy,
+        branchingType = config.getEffectiveBranchingType,
+        branchingBound = config.getEffectiveBranchingBound,
+        filterRare = config.filterRare,
+        dropFactor = config.dropFactor,
+        filterBounded =
+          if (config.branchingBound > 0) config.filterUnderBound else false,
+        hardRediscover = config.hardRediscovery,
+        outputPath = config.outputPath
+      )
+    }
     
     // Merge all individual JSON files into a single consolidated file
     mergeConstraintJsonFiles(config, context.metaData.log_name)
@@ -159,13 +231,25 @@ object DeclareMiner {
     // Gather previous position constraints if exist
     val positionConstraintsPath =
       s"""s3a://siesta/$logName/declare/position.parquet/"""
-    val oldConstraints = if (!hardRediscover) try {
-      spark.read.parquet(positionConstraintsPath).as[PositionConstraintRow]
-    } catch {
-      case _: org.apache.spark.sql.AnalysisException =>
-        spark.emptyDataset[PositionConstraintRow]
-    }
-    else spark.emptyDataset[PositionConstraintRow]
+    val oldConstraints = if (!hardRediscover) {
+      try {
+        val df = spark.read
+          .option("spark.sql.files.ignoreCorruptFiles", "true")
+          .option("spark.sql.files.ignoreMissingFiles", "true")
+          .parquet(positionConstraintsPath)
+        
+        // Force a count to check if read succeeded
+        if (df.isEmpty) {
+          spark.emptyDataset[PositionConstraintRow]
+        } else {
+          df.as[PositionConstraintRow]
+        }
+      } catch {
+        case _: Throwable =>
+          // Any error (file not found, missing files, etc.) - just start fresh
+          spark.emptyDataset[PositionConstraintRow]
+      }
+    } else spark.emptyDataset[PositionConstraintRow]
 
     // Filter out oldConstraints to exclude existence measurements for the traces
     // that have evolved and keep only the unrelated ones
@@ -212,6 +296,8 @@ object DeclareMiner {
       PairConstraint(c.rule, c.event_type, "", c.traces)
     )
 
+    // Write branched or singular results to parquet
+    val branchedPath = s"s3a://siesta/$logName/declare/position_branched.parquet/"
     (if (branchingPolicy.isDefined)
       BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor, isUnary = Some(true))
     else 
@@ -222,7 +308,7 @@ object DeclareMiner {
       .toDF("rule", "event_type", "traces", "support")
       .write
       .mode(SaveMode.Overwrite)
-      .json(Paths.get(outputPath, logName, "position.json").toString)
+      .parquet(branchedPath)
   }
 
   def extractExistenceConstraints(
@@ -246,13 +332,25 @@ object DeclareMiner {
 
     // get previous data if exist
     val existencePath = s"""s3a://siesta/$logName/declare/existence.parquet/"""
-    val oldConstraints =
+    val oldConstraints = {
       try {
-        spark.read.parquet(existencePath).as[ExactlyConstraintRow]
+        val df = spark.read
+          .option("spark.sql.files.ignoreCorruptFiles", "true")
+          .option("spark.sql.files.ignoreMissingFiles", "true")
+          .parquet(existencePath)
+        
+        // Force a count to check if read succeeded
+        if (df.isEmpty) {
+          spark.emptyDataset[ExactlyConstraintRow]
+        } else {
+          df.as[ExactlyConstraintRow]
+        }
       } catch {
-        case _: org.apache.spark.sql.AnalysisException =>
+        case _: Throwable =>
+          // Any error (file not found, missing files, etc.) - just start fresh
           spark.emptyDataset[ExactlyConstraintRow]
       }
+    }
 
     // Take the affected events and re-evaluate the existence on their traces
     val newConstraints = affectedEvents
@@ -283,7 +381,8 @@ object DeclareMiner {
     val completeSingleConstraints =
       this.extractAllExistenceConstraints(response, bTraceIds)
 
-    // Apply branching if enabled
+    // Write branched results to parquet
+    val branchedPath = s"s3a://siesta/$logName/declare/existence_branched.parquet/"
     (if (branchingPolicy.isDefined)
       BranchingResolver.branchMine(branchingPolicy.get, completeSingleConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor)
     else
@@ -301,7 +400,7 @@ object DeclareMiner {
       .filter(col("support") > supportThreshold)
       .write
       .mode(SaveMode.Overwrite)
-      .json(Paths.get(outputPath, logName, "existence.json").toString)
+      .parquet(branchedPath)
 
     finalConstraints.unpersist()
   }
@@ -420,7 +519,9 @@ object DeclareMiner {
           .toSet
         all_event_types.diff(existing_event_types)
       } catch {
-        case _: org.apache.spark.sql.AnalysisException => Set[String]()
+        case e: Exception =>
+          println(s"[WARNING] Could not read event types for unseen detection: ${e.getMessage}")
+          Set[String]()
       }
 //    println("Unseen event types: ", unseen_event_types_till_now)
 
@@ -494,7 +595,8 @@ object DeclareMiner {
           .withColumn("found", col("found").cast("int"))
           .as[ExChoiceRecord]
       } catch {
-        case _: org.apache.spark.sql.AnalysisException =>
+        case e: Exception =>
+          println(s"[WARNING] Could not read ex-choice table from $ex_choice_table: ${e.getMessage}")
           spark.createDataset(Seq.empty[ExChoiceRecord])
       }
     prev_ex_choices.cache()
@@ -563,9 +665,9 @@ object DeclareMiner {
     // make the override
     overwriteParquetAtomic(
       override_ex_choices
-        .as[ExChoiceRecord]
-        .withColumnRenamed("source", "ev_a")
-        .withColumnRenamed("target", "ev_b"),
+        .as[ExChoiceRecord],
+        // .withColumnRenamed("source", "ev_a")
+        // .withColumnRenamed("target", "ev_b"),
       ex_choice_table
     )
 
@@ -644,16 +746,38 @@ object DeclareMiner {
 
     val spark = SparkSession.builder().getOrCreate()
     import spark.implicits._
-    val ex_choice_records = spark.read
-      .parquet(ex_choice_table)
-      .withColumnRenamed("ev_a", "source")
-      .withColumnRenamed("ev_b", "target")
-      .as[ExChoiceRecord]
-    val co_existence_records = spark.read
-      .parquet(co_existence_table)
-      .withColumnRenamed("ev_a", "source")
-      .withColumnRenamed("ev_b", "target")
-      .as[CoExistenceRecord]
+    
+    // Check if tables exist, if not create empty results and return
+    val ex_choice_records = try {
+      spark.read
+        .option("spark.sql.files.ignoreCorruptFiles", "true")
+        .option("spark.sql.files.ignoreMissingFiles", "true")
+        .parquet(ex_choice_table)
+        .withColumnRenamed("ev_a", "source")
+        .withColumnRenamed("ev_b", "target")
+        .as[ExChoiceRecord]
+    } catch {
+      case _: Throwable =>
+        println(s"No existing ex-choice table found. Creating empty unordered constraints.")
+        // Write empty results and return early
+        writeEmptyUnorderedResults(metaData.log_name, spark)
+        return
+    }
+    
+    val co_existence_records = try {
+      spark.read
+        .option("spark.sql.files.ignoreCorruptFiles", "true")
+        .option("spark.sql.files.ignoreMissingFiles", "true")
+        .parquet(co_existence_table)
+        .withColumnRenamed("ev_a", "source")
+        .withColumnRenamed("ev_b", "target")
+        .as[CoExistenceRecord]
+    } catch {
+      case _: Throwable =>
+        println(s"No existing co-existence table found. Creating empty unordered constraints.")
+        writeEmptyUnorderedResults(metaData.log_name, spark)
+        return
+    }
 
     // calculating ex-choices
     val ex_choices = ex_choice_records
@@ -759,17 +883,47 @@ object DeclareMiner {
       .toDF("rule", "source", "target", "traces")
       .as[PairConstraint]
 
-      (if (branchingPolicy.isDefined)
-          BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, support * totalTraces, branchingBound, swap = false, dropFactor)
-      else
-          pairConstraints
-      )
+    // Write singular results to parquet first
+    val singularPath = s"s3a://siesta/${metaData.log_name}/declare/unordered.parquet/"
+    pairConstraints
       .map(c => (c.rule, c.source, c.target, c.traces, c.traces.size.toDouble / totalTraces))
       .toDF("rule", "source", "target", "traces", "support")
       .filter(col("support") > support)
       .write
       .mode(SaveMode.Overwrite)
-      .json(Paths.get(outputPath, metaData.log_name, "unordered.json").toString)
+      .parquet(singularPath)
+
+    // Write branched results to separate parquet
+    val branchedPath = s"s3a://siesta/${metaData.log_name}/declare/unordered_branched.parquet/"
+    (if (branchingPolicy.isDefined)
+        BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, support * totalTraces, branchingBound, swap = false, dropFactor)
+    else
+        pairConstraints
+    )
+    .map(c => (c.rule, c.source, c.target, c.traces, c.traces.size.toDouble / totalTraces))
+    .toDF("rule", "source", "target", "traces", "support")
+    .filter(col("support") > support)
+    .write
+    .mode(SaveMode.Overwrite)
+    .parquet(branchedPath)
+  }
+
+  /** Writes empty unordered constraint results to both singular and branched parquet files
+    * 
+    * @param logName The name of the log
+    * @param spark The SparkSession
+    */
+  private def writeEmptyUnorderedResults(logName: String, spark: SparkSession): Unit = {
+    import spark.implicits._
+    
+    val emptyDF = spark.emptyDataset[(String, String, String, Set[String], Double)]
+      .toDF("rule", "source", "target", "traces", "support")
+    
+    val singularPath = s"s3a://siesta/$logName/declare/unordered.parquet/"
+    emptyDF.write.mode(SaveMode.Overwrite).parquet(singularPath)
+    
+    val branchedPath = s"s3a://siesta/$logName/declare/unordered_branched.parquet/"
+    emptyDF.write.mode(SaveMode.Overwrite).parquet(branchedPath)
   }
 
   private def overwriteParquetAtomic(
@@ -819,15 +973,27 @@ object DeclareMiner {
     import spark.implicits._
 
     // get previous data if exist
-    val orderPath = s"""s3a://siesta/$logName/declare/order.parquet/"""
+    val orderPath = s"""s3a://siesta/$logName/declare/ordered.parquet/"""
 
-    val oldConstraints = if (!hardRediscover) try {
-      spark.read.parquet(orderPath).as[PairConstraintRow]
-    } catch {
-      case _: org.apache.spark.sql.AnalysisException =>
-        spark.emptyDataset[PairConstraintRow]
-    }
-    else spark.emptyDataset[PairConstraintRow]
+    val oldConstraints = if (!hardRediscover) {
+      try {
+        val df = spark.read
+          .option("spark.sql.files.ignoreCorruptFiles", "true")
+          .option("spark.sql.files.ignoreMissingFiles", "true")
+          .parquet(orderPath)
+        
+        // Force a count to check if read succeeded
+        if (df.isEmpty) {
+          spark.emptyDataset[PairConstraintRow]
+        } else {
+          df.as[PairConstraintRow]
+        }
+      } catch {
+        case _: Throwable =>
+          // Any error (file not found, missing files, etc.) - just start fresh
+          spark.emptyDataset[PairConstraintRow]
+      }
+    } else spark.emptyDataset[PairConstraintRow]
 
     // Cache the oldConstraints for efficient lookups without broadcasting large data
     oldConstraints.cache()
@@ -1162,7 +1328,8 @@ object DeclareMiner {
     pairConstraints.persist(StorageLevel.MEMORY_AND_DISK)
     updatedConstraints.unpersist()
 
-    // compute constraints using support and branching and collect them
+    // Write branched results to parquet
+    val branchedPath = s"s3a://siesta/$logName/declare/ordered_branched.parquet/"
     (if(branchingPolicy.isDefined)
       BranchingResolver.branchMine(branchingPolicy.get, pairConstraints, supportThreshold * totalTraces, branchingBound, swap = branchingType.contains(BranchingType.SOURCE), dropFactor)
     else 
@@ -1177,7 +1344,7 @@ object DeclareMiner {
     .filter(row => row.getAs[Double]("support") >= supportThreshold)
     .write
     .mode(SaveMode.Overwrite)
-    .json(Paths.get(outputPath, logName, "ordered.json").toString)
+    .parquet(branchedPath)
 
     pairConstraints.unpersist()
     bOldConstraintsLookup.unpersist()
@@ -1206,10 +1373,9 @@ object DeclareMiner {
     TraceStats(totalCount, adjacentCount)
   }
 
-  /** Merges all individual JSON constraint files into a single consolidated
-    * JSON file and removes the individual files and directories created by
-    * Spark Uses streaming mode to handle large files without loading everything
-    * into memory
+  /** Reads constraint data from S3 parquet files and streams them to a single
+    * consolidated JSON file. Uses streaming to handle large datasets without
+    * loading everything into memory.
     *
     * @param config
     *   The configuration containing all mining parameters
@@ -1217,8 +1383,8 @@ object DeclareMiner {
     *   The name of the log being processed
     */
   def mergeConstraintJsonFiles(config: Config, logName: String): Unit = {
-    val outputDir = new File(config.outputPath, logName)
-    val constraintTypes = List("position", "existence", "unordered", "ordered")
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
 
     // Generate the consolidated filename using JsonOutputWriter
     val writer = new JsonOutputWriter()
@@ -1241,51 +1407,60 @@ object DeclareMiner {
     var totalConstraints = 0
     var bufferedWriter: BufferedWriter = null
 
+    // Determine whether to read branched or singular results
+    val useBranched = config.isBranchingEnabled
+    val suffix = "_branched"
+
+    // Define constraint types and their S3 paths
+    val constraintSources = List(
+      ("position", s"s3a://siesta/$logName/declare/position$suffix.parquet/", List("rule", "event_type", "traces", "support")),
+      ("existence", s"s3a://siesta/$logName/declare/existence$suffix.parquet/", List("rule", "event_type", "instances", "traces", "support")),
+      ("unordered", s"s3a://siesta/$logName/declare/unordered$suffix.parquet/", List("rule", "source", "target", "traces", "support")),
+      ("ordered", s"s3a://siesta/$logName/declare/ordered$suffix.parquet/", List("rule", "source", "target", "traces", "support"))
+    )
+
     try {
       bufferedWriter = new BufferedWriter(new FileWriter(consolidatedFilename))
       bufferedWriter.write("[\n")
 
       var isFirstConstraint = true
 
-      constraintTypes.foreach { constraintType =>
-        val constraintDir = new File(outputDir, s"$constraintType.json")
-        if (constraintDir.exists() && constraintDir.isDirectory) {
-          // Process spark's files one by one
-          val partFiles =
-            constraintDir.listFiles().filter(_.getName.startsWith("part-"))
+      constraintSources.foreach { case (constraintType, s3Path, _) =>
+        try {
+          // Read parquet from S3 and process in streaming fashion
+          val df = spark.read
+            .option("spark.sql.files.ignoreCorruptFiles", "true")
+            .option("spark.sql.files.ignoreMissingFiles", "true")
+            .parquet(s3Path)
 
-          partFiles.foreach { partFile =>
-            try {
-              val source = Source.fromFile(partFile)
-              try {
-                // Process file line by line
-                source.getLines().foreach { line =>
-                  val trimmedLine = line.trim
-                  if (trimmedLine.nonEmpty) {
-                    // Add comma separator if not the first constraint
-                    if (!isFirstConstraint) {
-                      bufferedWriter.write(",\n")
-                    } else {
-                      isFirstConstraint = false
-                    }
+          // Convert to JSON strings and collect in batches
+          val jsonRows = df.toJSON.toLocalIterator()
+          
+          while (jsonRows.hasNext) {
+            val jsonLine = jsonRows.next()
+            
+            // Add comma separator if not the first constraint
+            if (!isFirstConstraint) {
+              bufferedWriter.write(",\n")
+            } else {
+              isFirstConstraint = false
+            }
 
-                    // Write the constraint with proper indentation
-                    bufferedWriter.write(s"  $trimmedLine")
-                    totalConstraints += 1
+            // Write the constraint with proper indentation
+            bufferedWriter.write(s"  $jsonLine")
+            totalConstraints += 1
 
-                    // Flush periodically to avoid large buffers
-                    if (totalConstraints % 1000 == 0)
-                      bufferedWriter.flush()
-                  }
-                }
-              } finally {
-                source.close()
-              }
-            } catch {
-              case e: Exception =>
-                println(s"Warning: Failed to read $partFile: ${e.getMessage}")
+            // Flush periodically to avoid large buffers
+            if (totalConstraints % 1000 == 0) {
+              bufferedWriter.flush()
             }
           }
+
+          println(s"Processed $constraintType constraints from $s3Path")
+
+        } catch {
+          case e: Exception =>
+            println(s"Warning: Could not read $constraintType constraints from $s3Path: ${e.getMessage}")
         }
       }
 
@@ -1304,29 +1479,199 @@ object DeclareMiner {
         bufferedWriter.close()
       }
     }
-
-    // Clean up individual directories created by Spark
-    constraintTypes.foreach { constraintType =>
-      val constraintDir = new File(outputDir, s"$constraintType.json")
-      if (constraintDir.exists() && constraintDir.isDirectory) {
-        deleteDirectory(constraintDir)
-      }
-    }
-    if (outputDir.exists() && outputDir.isDirectory)
-      deleteDirectory(outputDir)
   }
 
-  /** Recursively deletes a directory and all its contents
-    *
-    * @param directory
-    *   The directory to delete
+  /** Load position constraints from parquet and perform branching only (no recalculation)
     */
-  private def deleteDirectory(directory: File): Unit = {
-    if (directory.exists()) {
-      if (directory.isDirectory) {
-        directory.listFiles().foreach(deleteDirectory)
-      }
-      directory.delete()
+  private def extractPositionConstraintsFromParquet(
+    logName: String,
+    supportThreshold: Double,
+    totalTraces: Long,
+    branchingPolicy: Option[BranchingPolicy],
+    branchingBound: Int,
+    filterRare: Boolean,
+    dropFactor: Option[Double],
+    filterUnderBound: Boolean,
+    outputPath: String
+  ): Unit = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    val positionConstraintsPath = s"""s3a://siesta/$logName/declare/position.parquet/"""
+    
+    try {
+      val constraints = spark.read
+        .option("spark.sql.files.ignoreCorruptFiles", "true")
+        .option("spark.sql.files.ignoreMissingFiles", "true")
+        .parquet(positionConstraintsPath)
+        .as[PositionConstraintRow]
+        .groupByKey(x => (x.rule, x.event_type))
+        .mapGroups { case ((rule, event_type), rows) =>
+          val traces = rows.map(_.trace_id).toSet
+          PositionConstraint(rule, event_type, traces)
+        }
+        .map(c => PairConstraint(c.rule, c.event_type, c.event_type, c.traces))
+        .filter(_.traces.size.toDouble / totalTraces > supportThreshold)
+
+      // Write branched results to parquet
+      val branchedPath = s"s3a://siesta/$logName/declare/position_branched.parquet/"
+      constraints
+        .map(c =>
+          (
+            c.rule,
+            c.source,
+            c.target,
+            c.traces,
+            c.traces.size.toDouble / totalTraces
+          )
+        )
+        .toDF("rule", "event_type", "instances", "traces", "support")
+        .write
+        .mode(SaveMode.Overwrite)
+        .parquet(branchedPath)
+        
+    } catch {
+      case e: Throwable =>
+        println(s"Warning: Could not load position constraints from parquet: ${e.getMessage}")
+        // Write empty result
+        val branchedPath = s"s3a://siesta/$logName/declare/position_branched.parquet/"
+        spark.emptyDataset[(String, String, String, Set[String], Double)]
+          .toDF("rule", "event_type", "instances", "traces", "support")
+          .write
+          .mode(SaveMode.Overwrite)
+          .parquet(branchedPath)
+    }
+  }
+
+  /** Load existence constraints from parquet and perform branching only (no recalculation)
+    */
+  private def extractExistenceConstraintsFromParquet(
+    logName: String,
+    supportThreshold: Double,
+    totalTraces: Long,
+    bTraceIds: Broadcast[Set[String]],
+    branchingPolicy: Option[BranchingPolicy],
+    branchingBound: Int,
+    filterRare: Boolean,
+    dropFactor: Option[Double],
+    filterUnderBound: Boolean,
+    outputPath: String
+  ): Unit = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    val existencePath = s"""s3a://siesta/$logName/declare/existence.parquet/"""
+    
+    try {
+      val response: Dataset[ExactlyConstraint] = spark.read
+        .option("spark.sql.files.ignoreCorruptFiles", "true")
+        .option("spark.sql.files.ignoreMissingFiles", "true")
+        .parquet(existencePath)
+        .as[ExactlyConstraintRow]
+        .groupByKey(x => (x.rule, x.event_type, x.instances))
+        .mapGroups { case ((rule, event_type, instances), rows) =>
+          ExactlyConstraint(rule, event_type, instances, rows.map(_.trace_id).toSet)
+        }
+
+      val completeSingleConstraints = extractAllExistenceConstraints(response, bTraceIds)
+
+      // Write branched results to parquet
+      val branchedPath = s"s3a://siesta/$logName/declare/existence_branched.parquet/"
+      (if (branchingPolicy.isDefined)
+        BranchingResolver.branchMine(branchingPolicy.get, completeSingleConstraints, supportThreshold * totalTraces, branchingBound, swap = false, dropFactor)
+      else
+        completeSingleConstraints
+      ).map(c =>
+          (
+            c.rule,
+            c.source,
+            c.target,
+            c.traces,
+            c.traces.size.toDouble / totalTraces
+          )
+        )
+        .toDF("rule", "event_type", "instances", "traces", "support")
+        .filter(col("support") > supportThreshold)
+        .write
+        .mode(SaveMode.Overwrite)
+        .parquet(branchedPath)
+        
+    } catch {
+      case e: Throwable =>
+        println(s"Warning: Could not load existence constraints from parquet: ${e.getMessage}")
+        // Write empty result
+        val branchedPath = s"s3a://siesta/$logName/declare/existence_branched.parquet/"
+        spark.emptyDataset[(String, String, String, Set[String], Double)]
+          .toDF("rule", "event_type", "instances", "traces", "support")
+          .write
+          .mode(SaveMode.Overwrite)
+          .parquet(branchedPath)
+    }
+  }
+
+  /** Load ordered constraints from parquet and perform branching only (no recalculation)
+    */
+  private def extractOrderedFromParquet(
+    logName: String,
+    bTraceIds: Broadcast[Set[String]],
+    totalTraces: Long,
+    supportThreshold: Double,
+    branchingPolicy: Option[BranchingPolicy],
+    branchingType: Option[BranchingType],
+    branchingBound: Int,
+    filterRare: Boolean,
+    dropFactor: Option[Double],
+    filterBounded: Boolean,
+    outputPath: String
+  ): Unit = {
+    val spark = SparkSession.builder().getOrCreate()
+    import spark.implicits._
+
+    val orderPath = s"""s3a://siesta/$logName/declare/ordered.parquet/"""
+    
+    try {
+      val constraints = spark.read
+        .option("spark.sql.files.ignoreCorruptFiles", "true")
+        .option("spark.sql.files.ignoreMissingFiles", "true")
+        .parquet(orderPath)
+        .as[PairConstraintRow]
+        .groupByKey(x => (x.rule, x.source, x.target))
+        .mapGroups { case ((rule, source, target), rows) =>
+          PairConstraint(rule, source, target, rows.map(_.trace_id).toSet)
+        }
+        .filter(_.traces.size.toDouble / totalTraces > supportThreshold)
+
+      // Write branched results to parquet
+      val branchedPath = s"s3a://siesta/$logName/declare/ordered_branched.parquet/"
+      val swap = branchingType.isDefined && branchingType.get == BranchingType.SOURCE
+      (if (branchingPolicy.isDefined)
+        BranchingResolver.branchMine(branchingPolicy.get, constraints, supportThreshold * totalTraces, branchingBound, swap, dropFactor)
+      else
+        constraints
+      ).map(c =>
+          (
+            c.rule,
+            c.source,
+            c.target,
+            c.traces,
+            c.traces.size.toDouble / totalTraces
+          )
+        )
+        .toDF("rule", "source", "target", "traces", "support")
+        .write
+        .mode(SaveMode.Overwrite)
+        .parquet(branchedPath)
+        
+    } catch {
+      case e: Throwable =>
+        println(s"Warning: Could not load ordered constraints from parquet: ${e.getMessage}")
+        // Write empty result
+        val branchedPath = s"s3a://siesta/$logName/declare/ordered_branched.parquet/"
+        spark.emptyDataset[(String, String, String, Set[String], Double)]
+          .toDF("rule", "source", "target", "traces", "support")
+          .write
+          .mode(SaveMode.Overwrite)
+          .parquet(branchedPath)
     }
   }
 

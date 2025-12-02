@@ -59,9 +59,10 @@ object Utilities {
     println(s"[Support]\t\t${config.support}")
 
     if (config.isBranchingEnabled) {
+      val effectiveBound = config.getEffectiveBranchingBound
       println(s"[Branching]\t\tPolicy=${config.getBranchingPolicyName}, " +
         s"Type=${config.getBranchingTypeName}, " +
-        s"Bound=${if(config.branchingBound != Int.MaxValue) config.branchingBound else "None"}, " +
+        s"Bound=${if(effectiveBound != Int.MaxValue) effectiveBound else "None"}, " +
         s"Drop=${config.dropFactor.getOrElse("None")}, " +
         s"FilterRare=${config.filterRare}, " +
         s"FilterUnderBound=${config.filterUnderBound}")

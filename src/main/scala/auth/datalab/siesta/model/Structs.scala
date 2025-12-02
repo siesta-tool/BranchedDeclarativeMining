@@ -62,7 +62,7 @@ object Structs {
                     support: Double = 0,
                     branchingPolicy: Option[BranchingPolicy] = None,
                     branchingType: Option[BranchingType] = None,
-                    branchingBound: Int = Int.MaxValue,
+                    branchingBound: Int = 0,
                     dropFactor: Option[Double] = None,
                     filterRare: Boolean = false,
                     filterUnderBound: Boolean = false,
@@ -71,7 +71,7 @@ object Structs {
                     outputPath: String = "./output") {
     
     /**
-     * Determines if branching is enabled based on both policy and type being defined
+     * Determines if branching is enabled based on policy and type being defined
      * @return true if branching should be applied
      */
     def isBranchingEnabled: Boolean = branchingPolicy.isDefined && branchingType.isDefined
@@ -96,7 +96,9 @@ object Structs {
      * Gets the normalized branching policy
      * @return the branching policy name, or null if disabled
      */
-    def getEffectiveBranchingPolicy: Option[BranchingPolicy] = branchingPolicy
+    def getEffectiveBranchingPolicy: Option[BranchingPolicy] = {
+      if (isBranchingEnabled) branchingPolicy else None
+    }
     
     /**
      * Gets the branching policy name as string (for backward compatibility)
@@ -104,6 +106,16 @@ object Structs {
      */
     def getBranchingPolicyName: String = {
       branchingPolicy.map(_.name).orNull
+    }
+    
+    /**
+     * Gets the effective branching bound when branching is enabled.
+     * If branchingBound is 0 (default/not specified), returns Int.MaxValue for unbounded mining.
+     * Otherwise returns the specified bound.
+     * @return the effective branching bound
+     */
+    def getEffectiveBranchingBound: Int = {
+      if (branchingBound == 0) Int.MaxValue else branchingBound
     }
   }
 

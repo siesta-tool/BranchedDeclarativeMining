@@ -5,8 +5,18 @@ import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairCons
 import org.apache.spark.sql.{Dataset, SparkSession}
 import java.util.BitSet
 import scala.jdk.CollectionConverters._
+import org.apache.log4j.{Level, Logger}
 
 object AndBranchingMiner {
+
+  Logger.getLogger("org").setLevel(Level.INFO)
+  private val log: Logger = Logger.getLogger(this.getClass)
+
+  /**
+   * Case class for distributed candidate generation with serialized BitSets.
+   * BitSets are serialized as byte arrays for Spark Dataset compatibility.
+   */
+  case class CandidateWithBits(rule: String, source: String, targets: Array[String], bitset: Array[Byte])
 
   /**
    * Case class to maintain incremental statistics for support drops.
@@ -84,331 +94,239 @@ object AndBranchingMiner {
     (shouldStop, updatedStats)
   }
 
-  private def regularMining(
-      rule: String, 
-      source: String, 
-      targetToBits: Map[String, BitSet], 
-      minSupport: Double, 
-      maxTargets: Int, 
+  private def bottomUpMining(
+      rule: String,
+      source: String,
+      targetToBits: Map[String, BitSet],
+      minSupport: Double,
+      maxTargets: Int,
       bcIntToTrace: org.apache.spark.broadcast.Broadcast[Array[String]],
       dropFactor: Option[Double]
     ): Option[TargetBranchedPairConstraint] = {
-    
+
+    log.info(s"Starting bottomUpMining for rule '$rule', source '$source' with ${targetToBits.size} initial targets.")
+
     // Helper: from BitSet -> (support, Set[String])
     def supportAndTraces(bits: BitSet): (Int, Set[String]) = {
-      val idxs: Array[Int] = bits.stream().toArray 
+      val idxs: Array[Int] = bits.stream().toArray
       val traces: Set[String] = idxs.map(i => bcIntToTrace.value(i)).toSet
       (idxs.length, traces)
     }
 
     // Check if we're in unbounded mode
     val isUnbounded = maxTargets == Int.MaxValue
-    
+
     // Track incremental drop statistics (only when needed for unbounded mode with drop monitoring)
     var dropStats = DropStats(0, 0.0, 0.0)
     var prevSupports: Option[Seq[Double]] = None
-    
-    // Level-1 candidates: single-target lists 
+
+    // Level-1 candidates: single-target lists
     var level: Seq[(List[String], BitSet)] =
       targetToBits.toSeq
         .map { case (t, bitset) => (List(t), bitset) }
         .filter { case (_, bits) => bits.cardinality() > minSupport }
         .sortBy(_._1.mkString(","))
 
+    log.info(s"Level 1: Found ${level.size} candidates meeting minSupport.")
+
     // Record initial support only for unbounded mode with drop monitoring
     if (isUnbounded && dropFactor.isDefined && level.nonEmpty) {
       prevSupports = Some(level.map(_._2.cardinality().toDouble))
     }
 
-    // keep all valid candidates across levels so we can pick best later
-    var allCandidates = level.toBuffer
+    // Track only the best candidate found so far (greedy approach)
+    // Tie-breaking: support -> largest target set -> lexicographic
+    var bestCandidate: Option[(List[String], BitSet)] = if (level.nonEmpty) {
+      Some(level.maxBy { case (targets, bits) => 
+        (bits.cardinality(), targets.length, targets.mkString(","))
+      })
+    } else {
+      None
+    }
+    
     var k = 2
 
     // Expand levels using prefix grouping (trie-like join)
     while (level.nonEmpty && k <= maxTargets) {
+      log.info(s"Starting level $k expansion...")
+      // For level 2, we join single items directly
+      // For level k>2, we group by prefix of length k-2
+      val nextBuilder = scala.collection.mutable.ArrayBuffer.empty[(List[String], BitSet)]
 
-        // For level 2, we join single items directly
-        // For level k>2, we group by prefix of length k-2 
-        val nextBuilder = scala.collection.mutable.ArrayBuffer.empty[(List[String], BitSet)]
+      if (k == 2) {
+        // Special case for level 2: combine all pairs of single targets
+        // Ensure canonical order: only combine if first < second lexicographically
+        val arr = level.toArray.sortBy(_._1.head) // Sort by the single element
+        val n = arr.length
+        var i = 0
+        while (i < n) {
+          var j = i + 1
+          while (j < n) {
+            val (targets1, bits1) = arr(i)
+            val (targets2, bits2) = arr(j)
+            // targets1 and targets2 are single-element lists
+            // Since arr is sorted and j > i, this naturally maintains order
+            val newTargets = targets1 ++ targets2 // Already in sorted order
 
-        if (k == 2) {
-            // Special case for level 2: combine all pairs of single targets
-            val arr = level.toArray
+            val inter = bits1.clone().asInstanceOf[BitSet]
+            inter.and(bits2)
+
+            if (inter.cardinality() > minSupport) {
+              nextBuilder += ((newTargets, inter))
+            }
+            j += 1
+          }
+          i += 1
+        }
+      } else {
+        // For level k>2: Group by prefix of length k-2
+        val grouped: Map[List[String], Seq[(List[String], BitSet)]] =
+          level.groupBy { case (targets, _) => targets.take(k - 2) }
+
+        // For each group, consider pairs that share the same prefix
+        // CRITICAL: Only join if last element of first < last element of second
+        // This ensures each k-itemset is generated exactly once (canonical pairing)
+        grouped.values.foreach { groupSeq =>
+          if (groupSeq.size >= 2) {
+            val arr = groupSeq.sortBy(_._1.last)
             val n = arr.length
             var i = 0
             while (i < n) {
-                var j = i + 1
-                while (j < n) {
-                    val (targets1, bits1) = arr(i)
-                    val (targets2, bits2) = arr(j)
-                    val newTargets = (targets1 ++ targets2).sorted // ensure canonical order
+              var j = i + 1
+              while (j < n) {
+                val (set1, bits1) = arr(i)
+                val (set2, bits2) = arr(j)
+                // Since arr is sorted by last element and j > i,
+                // we have set1.last < set2.last (canonical order)
+                // create new candidate: prefix ++ last elements
+                // No need to sort - maintaining prefix order + ordered last elements
+                val newTargets = set1 :+ set2.last
 
-                    val inter = bits1.clone().asInstanceOf[BitSet]
-                    inter.and(bits2)
-                    
-                    if (inter.cardinality() > minSupport) {
-                        nextBuilder += ((newTargets, inter))
-                    }
-                    j += 1
+                val inter = bits1.clone().asInstanceOf[BitSet]
+                inter.and(bits2)
+                if (inter.cardinality() > minSupport) {
+                  nextBuilder += ((newTargets, inter))
                 }
-                i += 1
+                j += 1
+              }
+              i += 1
             }
-        } else {
-            // For level k>2: Group by prefix of length k-2
-            val grouped: Map[List[String], Seq[(List[String], BitSet)]] =
-                level.groupBy { case (targets, _) => targets.take(k - 2) }
-
-            // For each group, consider pairs that share the same prefix
-            grouped.values.foreach { groupSeq =>
-                if (groupSeq.size >= 2) {
-                    val arr = groupSeq.sortBy(_._1.last)
-                    val n = arr.length
-                    var i = 0
-                    while (i < n) {
-                        var j = i + 1
-                        while (j < n) {
-                            val (set1, bits1) = arr(i)
-                            val (set2, bits2) = arr(j)
-                            // create new candidate: prefix ++ last elements
-                            val newTargets = (set1 ++ List(set2.last)).distinct.sorted
-
-                            val inter = bits1.clone().asInstanceOf[BitSet]
-                            inter.and(bits2)
-                            
-                            if (inter.cardinality() > minSupport) {
-                                nextBuilder += ((newTargets, inter))
-                            }
-                            j += 1
-                        }
-                        i += 1
-                    }
-                }
-            }
-        }
-
-        // Deduplicate candidate target lists and prune by minSupport
-        val pruned: Seq[(List[String], BitSet)] = nextBuilder
-            .groupBy(_._1) // group by target-list
-            .map { case (targetsList, seq) =>
-                // combine bitsets if multiple bitsets produced for same union:
-                // take intersection across all (should be equal in Apriori-style join,
-                // but we intersect to be safe)
-                val combined = seq.map(_._2).reduce { (a, b) =>
-                    val c = a.clone().asInstanceOf[BitSet]
-                    c.and(b)
-                    c
-                }
-                (targetsList, combined)
-            }
-            .toSeq
-            .filter { case (_, bits) => bits.cardinality() > minSupport }
-            .sortBy(_._1.mkString(",")) // deterministic order
-
-        // add pruned to allCandidates and continue
-        allCandidates ++= pruned
-        level = pruned
-        
-        // For unbounded mode with drop monitoring, track support and check for major drops
-        if (isUnbounded && level.nonEmpty && dropFactor.isDefined && prevSupports.isDefined) {
-          val currentSupports = level.map(_._2.cardinality().toDouble)
-          
-          // Update drop statistics incrementally and check if we should stop
-          val (shouldStop, updatedStats) = shouldStopExtension(
-            prevSupports.get, currentSupports, dropStats, dropFactor.get
-          )
-          dropStats = updatedStats
-          prevSupports = Some(currentSupports)
-          
-          if (shouldStop) {
-            level = Seq.empty  // Stop expansion
-          }
-        }
-        
-        k += 1
-    }
-
-    if (allCandidates.isEmpty) {
-      None
-    } else {
-      // First, convert all candidates to TargetBranchedPairConstraint objects
-      val allConstraints = allCandidates
-        .map { case (targetsList, bits) =>
-            val (sup, traces) = supportAndTraces(bits)
-            TargetBranchedPairConstraint(rule, source, targetsList.toArray, traces)
-        }
-        
-      // Filter out any constraints with target sets that are induced by others
-      val filteredConstraints = allConstraints.filter { current =>
-        val currentTargets = current.targets.toSet
-        
-        !allConstraints.exists { other =>
-          if (current eq other) false  // Skip self-comparison
-          else {
-            val otherTargets = other.targets.toSet
-            
-            // Current is induced by other if:
-            // 1. There's overlap between target sets
-            // 2. Current's target set is a proper subset of other's
-            val hasOverlap = currentTargets.exists(otherTargets.contains)
-            val isProperSubset = currentTargets.size < otherTargets.size && currentTargets.subsetOf(otherTargets)
-            
-            hasOverlap && isProperSubset
           }
         }
       }
+      log.info(s"Level $k: Generated ${nextBuilder.size} candidates before pruning.")
+
+      // With canonical pairing, we should have no duplicates, but we still need to
+      // verify and handle any edge cases. Most groups will have size 1.
+      val pruned: Seq[(List[String], BitSet)] = nextBuilder
+        .groupBy(_._1) // group by target-list
+        .map { case (targetsList, seq) =>
+          val combined = if (seq.size == 1) {
+            // No duplicates - common case with canonical pairing
+            seq.head._2
+          } else {
+            // Duplicates found (shouldn't happen with canonical pairing)
+            // Take first one since they should all be equal
+            log.warn(s"Level $k: Found ${seq.size} duplicates for target list ${targetsList.mkString(",")}")
+            seq.head._2
+          }
+          (targetsList, combined)
+        }
+        .toSeq
+        .filter { case (_, bits) => bits.cardinality() > minSupport }
+        .sortBy(_._1.mkString(",")) // deterministic order
+
+      log.info(s"Level $k: ${pruned.size} candidates remaining after pruning.")
+
+      // Update best candidate if this level has a better one
+      if (pruned.nonEmpty) {
+        val levelBest = pruned.maxBy { case (targets, bits) => 
+          (bits.cardinality(), targets.length, targets.mkString(","))
+        }
+        
+        bestCandidate = bestCandidate match {
+          case None => Some(levelBest)
+          case Some((oldTargets, oldBits)) =>
+            val oldScore = (oldBits.cardinality(), oldTargets.length, oldTargets.mkString(","))
+            val newScore = (levelBest._2.cardinality(), levelBest._1.length, levelBest._1.mkString(","))
+            
+            import scala.math.Ordering.Implicits._
+            if (newScore > oldScore) Some(levelBest) else Some((oldTargets, oldBits))
+        }
+      }
       
-      // From the remaining non-induced constraints, select the best one
-      // Tie-breaking: support -> largest target set -> lexicographic
-      Some(filteredConstraints.maxBy(bc => (bc.traces.size, bc.targets.length, bc.targets.mkString(","))))
+      level = pruned
+
+      // For unbounded mode with drop monitoring, track support and check for major drops
+      if (isUnbounded && level.nonEmpty && dropFactor.isDefined && prevSupports.isDefined) {
+        val currentSupports = level.map(_._2.cardinality().toDouble)
+
+        // Update drop statistics incrementally and check if we should stop
+        val (shouldStop, updatedStats) = shouldStopExtension(
+          prevSupports.get, currentSupports, dropStats, dropFactor.get
+        )
+        dropStats = updatedStats
+        prevSupports = Some(currentSupports)
+
+        if (shouldStop) {
+          log.info(s"Stopping unbounded expansion at level $k due to significant support drop.")
+          level = Seq.empty // Stop expansion
+        }
+      }
+
+      k += 1
+    }
+
+    bestCandidate match {
+      case None =>
+        log.info("No valid branched constraints found.")
+        None
+      case Some((targetsList, bits)) =>
+        val (sup, traces) = supportAndTraces(bits)
+        val result = TargetBranchedPairConstraint(rule, source, targetsList.toArray, traces)
+        log.info(s"Selected best constraint with ${result.targets.length} targets and support ${result.traces.size}.")
+        Some(result)
     }
   }
 
   private def chainMining(
       rule: String,
-      allConstraints: Array[PairConstraint], 
-      minSupport: Double, 
+      source: String,
+      targetToBits: Map[String, BitSet],
+      minSupport: Double,
       maxTargets: Int,
-      traceToInt: Map[String, Int],
-      intToTrace: Array[String],
+      bcIntToTrace: org.apache.spark.broadcast.Broadcast[Array[String]],
       dropFactor: Option[Double]
-    ): Seq[PairConstraint] = {
-    
-    // Helper: from BitSet -> (support, Set[String])
-    def supportAndTraces(bits: BitSet): (Int, Set[String]) = {
-      val idxs: Array[Int] = bits.stream().toArray 
-      val traces: Set[String] = idxs.map(i => intToTrace(i)).toSet
-      (idxs.length, traces)
+    ): Option[TargetBranchedPairConstraint] = {
+
+    if (targetToBits.isEmpty) {
+      return None
     }
 
-    // Convert constraints to BitSet representation
-    def constraintToBits(constraint: PairConstraint): BitSet = {
-      val bits = new BitSet()
-      val idxs = constraint.traces.flatMap(t => traceToInt.get(t))
-      idxs.foreach(bits.set)
-      bits
-    }
+    // Find the best chain target based on the largest trace set (bitset cardinality)
+    val (bestChainTarget, bestChainBits) = targetToBits.maxBy { case (_, bits) => bits.cardinality() }
 
-    // Create a lookup: (source, target) -> BitSet for efficient chain building
-    val chainLookup: Map[(String, String), BitSet] = 
-      allConstraints.map(c => (c.source, c.target) -> constraintToBits(c)).toMap
-
-    // Group by source to get starting points, but use level-wise approach like original
-    val startingConstraints = allConstraints.groupBy(_.source)
-    
-    val allValidChains = scala.collection.mutable.ArrayBuffer[PairConstraint]()
-
-    // Check if we're in unbounded mode
-    val isUnbounded = maxTargets == Int.MaxValue
-
-    startingConstraints.foreach { case (startSource, constraints) =>
-      // Track incremental drop statistics (only when needed for unbounded mode with drop monitoring)
-      var dropStats = DropStats(0, 0.0, 0.0)
-      var prevSupports: Option[Seq[Double]] = None
-      
-      // Level 1: Single constraints (A -> B)
-      var currentLevel: Seq[(List[String], BitSet)] = constraints
-        .map { c => 
-          val bits = constraintToBits(c)
-          (List(c.source, c.target), bits)
-        }
-        .filter { case (_, bits) => bits.cardinality() > minSupport }
-        .toSeq
-
-      // Record initial support only for unbounded mode with drop monitoring
-      if (isUnbounded && dropFactor.isDefined && currentLevel.nonEmpty) {
-        prevSupports = Some(currentLevel.map(_._2.cardinality().toDouble))
-      }
-
-      var allCandidates = currentLevel.toBuffer
-      var k = 2
-
-      // Level-wise expansion
-      while (currentLevel.nonEmpty && k <= maxTargets) {
-        val nextLevelBuilder = scala.collection.mutable.ArrayBuffer[(List[String], BitSet)]()
-        
-        // For each current chain, try to extend it by one step
-        currentLevel.foreach { case (currentChain, currentBits) =>
-          val lastTarget = currentChain.last
-          
-          // Look for constraints where lastTarget -> nextTarget exists
-          chainLookup.foreach { case ((source, target), nextBits) =>
-            if (source == lastTarget && !currentChain.contains(target)) {
-              // Found a valid extension: lastTarget -> target
-              val extendedChain = currentChain :+ target
-              val chainBits = currentBits.clone().asInstanceOf[BitSet]
-              chainBits.and(nextBits)
-              
-              if (chainBits.cardinality() > minSupport) {
-                nextLevelBuilder += ((extendedChain, chainBits))
-              }
-            }
-          }
-        }
-        
-        // Deduplicate and prune (similar to your original approach)
-        val prunedLevel = nextLevelBuilder
-          .groupBy(_._1) // group by chain
-          .map { case (chain, candidates) =>
-            // If multiple candidates for same chain, take intersection
-            val combinedBits = candidates.map(_._2).reduce { (a, b) =>
-              val c = a.clone().asInstanceOf[BitSet]
-              c.and(b)
-              c
-            }
-            (chain, combinedBits)
-          }
-          .toSeq
-          .filter { case (_, bits) => bits.cardinality() > minSupport }
-          .sortBy(_._1.mkString(",")) // deterministic order
-        
-        allCandidates ++= prunedLevel
-        currentLevel = prunedLevel
-        
-        // For unbounded mode with drop monitoring, track support and check for major drops
-        if (isUnbounded && currentLevel.nonEmpty && dropFactor.isDefined && prevSupports.isDefined) {
-          val currentSupports = currentLevel.map(_._2.cardinality().toDouble)
-          
-          // Update drop statistics incrementally and check if we should stop
-          val (shouldStop, updatedStats) = shouldStopExtension(
-            prevSupports.get, currentSupports, dropStats, dropFactor.get
-          )
-          dropStats = updatedStats
-          prevSupports = Some(currentSupports)
-          
-          if (shouldStop) {
-            currentLevel = Seq.empty  // Stop expansion
-          }
-        }
-        
-        k += 1
-      }
-
-      // Convert valid chains to PairConstraints
-      allCandidates.foreach { case (chain, bits) =>
-        if (chain.length >= 2) { // Only chains with at least 2 elements (source and 1st target)
-          val (_, traces) = supportAndTraces(bits)
-          val chainTargets = chain.tail // Remove source, keep only targets in chain
-          allValidChains += PairConstraint(rule, startSource, chainTargets.mkString(","), traces)
-        }
+    // Filter the other targets: retain only those whose bitsets have a non-empty intersection with the best chain's bitset.
+    // The best chain target itself is included to start the bottom-up process.
+    val filteredTargetToBits = targetToBits.filter { case (target, bits) =>
+      if (target == bestChainTarget) {
+        true // Always include the best chain target
+      } else {
+        val intersection = bestChainBits.clone().asInstanceOf[BitSet]
+        intersection.and(bits)
+        !intersection.isEmpty
       }
     }
 
-    // Filter chains to keep only the best chain for each (rule, source) pair - consistent with regular constraints
-    val filteredChains = allValidChains
-      .groupBy(c => (c.rule, c.source))
-      .map { case (_, chains) =>
-        // Pick the chain with highest support, then longest target set, then lexicographic
-        chains.maxBy(c => (c.traces.size, c.target.split(",").length, c.target))
-      }
-      .toSeq
-    
-    filteredChains
+    // The rule for bottom-up mining should be the original "chain-" prefixed rule.
+    // The source is the same. The targets are the filtered ones.
+    bottomUpMining(rule, source, filteredTargetToBits, minSupport, maxTargets, bcIntToTrace, dropFactor)
   }
 
 
   /**
    * AND mining with support for both bounded and unbounded target set extension.
-   * 
+   *
    * @param constraints Input constraints dataset
    * @param minSupport Minimum support threshold for valid constraints
    * @param maxTargets Maximum number of targets in a constraint. Use Int.MaxValue for unbounded extension.
@@ -416,12 +334,15 @@ object AndBranchingMiner {
    * @param dropFactor Optional factor controlling major drop detection in unbounded mode.
    *                   If None, unbounded extension continues until support threshold or no more candidates.
    *                   If Some(value), uses drop monitoring with threshold = avg_drop + (value * std_dev_of_drops)
+   * @param allConstraints Optional dataset of ALL constraints (needed for chain rule mixing). 
+   *                       When mining chain-X rules, this should contain both chain-X and X constraints.
    * @return Dataset of mined AND-branched constraints
-   * 
+   *
    * Usage examples:
    * - Bounded: andMine(constraints, 0.1, maxTargets = 5)
-   * - Unbounded (traditional): andMine(constraints, 0.1, Int.MaxValue) 
+   * - Unbounded (traditional): andMine(constraints, 0.1, Int.MaxValue)
    * - Unbounded (with drop monitoring): andMine(constraints, 0.1, Int.MaxValue, dropFactor = Some(2.0))
+   * - Chain rule mixing: andMine(chainConstraints, 0.1, 3, allConstraints = Some(allConstraintsDataset))
    */
   def andMine(
       constraints: Dataset[PairConstraint],
@@ -431,81 +352,286 @@ object AndBranchingMiner {
       dropFactor: Option[Double] = None,
       isUnary: Option[Boolean] = Some(false)
     ): Dataset[PairConstraint] = {
-    
+
     val spark = SparkSession.builder().getOrCreate()
-
     import spark.implicits._
-    
+
+    // Cache the original dataset before any transformations for chain rule mixing
+    val allConstraints = constraints.cache()
+
+    // Handle source-branching by swapping source and target, then recursively calling.
+    // The final result is swapped back.
     if (swap) {
-      // Swap source and target in constraints for source-branching
       val swapped = constraints.map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
-      return andMine(swapped, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
+      return andMine(swapped, minSupport, maxTargets, swap = false, dropFactor, isUnary)
+        .map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
     }
 
+    // Handle unary constraints by treating the source as an empty string.
+    // The final result has the target moved back to the source field.
     if (isUnary.getOrElse(false)) {
-      // For unary constraints, we treat source as none
       val unaryConstraints = constraints.map(c => PairConstraint(c.rule, "", c.source, c.traces))
-      return andMine(unaryConstraints, minSupport, maxTargets, swap = false, dropFactor).map(c => PairConstraint(c.rule, c.target, c.source, c.traces))
+      return andMine(unaryConstraints, minSupport, maxTargets, swap = false, dropFactor, isUnary = Some(false))
+        .map(c => PairConstraint(c.rule, c.target, "", c.traces)) // source is empty for unary
     }
 
+    // Create a distributed map from trace IDs to integers to avoid collecting all traces on the driver.
+    log.info("Creating distributed map from trace IDs to integers")
+    val distinctTraces = constraints.flatMap(_.traces).distinct().cache()
+    val traceToInt: Map[String, Int] = distinctTraces
+      .rdd
+      .zipWithIndex()
+      .map { case (trace, index) => (trace, index.toInt) }
+      .collectAsMap()
+      .toMap
+    log.info(s"Collected ${traceToInt.size} distinct traces")
 
-    // Collect all distinct trace IDs and assign integer indices once (driver).
-    val allTraces: Array[String] = constraints.flatMap(_.traces).distinct.collect()
-    val traceToInt: Map[String, Int] = allTraces.zipWithIndex.toMap
-    val intToTrace: Array[String] = allTraces
+    // Create the reverse mapping from integers to trace IDs.
+    val intToTrace: Array[String] = new Array[String](traceToInt.size)
+    traceToInt.foreach { case (trace, index) => intToTrace(index) = trace }
 
-    // Broadcast dictionaries for use in executors
+    // Broadcast the mappings to all executors.
+    log.info("Broadcasting trace mappings to executors")
     val bcTraceToInt = spark.sparkContext.broadcast(traceToInt)
     val bcIntToTrace = spark.sparkContext.broadcast(intToTrace)
 
-    // For chain rules, we need a different approach that considers all constraints
-    // First, separate chain rules from regular rules
-    val chainConstraints = constraints.filter(_.rule.startsWith("chain"))
-    val regularConstraints = constraints.filter(!_.rule.startsWith("chain"))
-
-    // Process regular constraints with the existing algorithm
-    val regularResults = regularConstraints
+    // Group constraints by (rule, source) and process each group.
+    log.info("Grouping constraints by (rule, source) and processing groups")
+    
+    // Pre-process ALL constraints grouped by (rule, source) for chain mixing
+    // Use RDD to avoid Spark Dataset serialization issues with BitSet
+    val allConstraintsByRuleSource: Map[(String, String), Map[String, BitSet]] = allConstraints
+      .rdd
+      .map { c =>
+        val bits = new BitSet()
+        val idxs = c.traces.flatMap(t => bcTraceToInt.value.get(t))
+        idxs.foreach(bits.set)
+        ((c.rule, c.source), (c.target, bits))
+      }
+      .groupByKey()
+      .mapValues(_.toMap)
+      .collectAsMap()
+      .toMap
+    
+    val bcAllConstraints = spark.sparkContext.broadcast(allConstraintsByRuleSource)
+    
+    // Convert to a Dataset with BitSets for distributed processing
+    val candidatesWithBits = constraints
       .groupByKey(c => (c.rule, c.source))
-      .mapGroups { case ((rule, source), iter) =>
-        val singles = iter.toSeq
-
-        // Build target -> java.util.BitSet using the broadcasted dictionary
-        val targetToBits: Map[String, BitSet] = singles.map { c =>
+      .flatMapGroups { case ((rule, source), iter) =>
+        // Convert trace sets to BitSets for this group (these are the constraints for this specific rule)
+        val chainTargetToBits: Map[String, BitSet] = iter.map { c =>
           val bits = new BitSet()
-          // map string trace ids to ints (skip missing ones just in case)
           val idxs = c.traces.flatMap(t => bcTraceToInt.value.get(t))
           idxs.foreach(bits.set)
           c.target -> bits
         }.toMap
-
-        regularMining(rule, source, targetToBits, minSupport, maxTargets, bcIntToTrace, dropFactor)
-      }
-      .filter(_.isDefined)
-      .map(_.get)
-      .map(bc => PairConstraint(bc.rule, bc.source, bc.targets.mkString(","), bc.traces))
-
-    // Process chain constraints with a more distributed approach
-    val chainResults = if (chainConstraints.count() > 0) {
-      // Broadcast trace mappings for use in executors
-      val bcTraceToIntForChain = spark.sparkContext.broadcast(traceToInt)
-      val bcIntToTraceForChain = spark.sparkContext.broadcast(intToTrace)
-      
-      // Group by rule and process each rule's constraints in parallel
-      chainConstraints
-        .groupByKey(_.rule)
-        .mapGroups { (rule, constraintsIter) =>
-          // Collect constraints for this specific rule only
-          val ruleConstraints = constraintsIter.toArray
-          // Run chain mining for this rule's constraints
-          chainMining(rule, ruleConstraints, minSupport, maxTargets, 
-                      bcTraceToIntForChain.value, bcIntToTraceForChain.value, dropFactor)
+        
+        // For chain rules: mix best chain target with non-chain targets
+        val filteredTargetToBits = if (rule.startsWith("chain-")) {
+          if (chainTargetToBits.isEmpty) {
+            Map.empty[String, BitSet]
+          } else {
+            // Find the best chain target (highest support)
+            val (bestChainTarget, bestChainBits) = chainTargetToBits.maxBy { case (_, bits) => bits.cardinality() }
+            
+            // Get non-chain targets for this source from the broadcast variable
+            val baseRule = rule.stripPrefix("chain-")
+            val nonChainTargets = bcAllConstraints.value.getOrElse((baseRule, source), Map.empty[String, BitSet])
+            
+            // Filter non-chain targets: keep only those with non-empty intersection with best chain target
+            val compatibleNonChainTargets = nonChainTargets.filter { case (target, bits) =>
+              val intersection = bestChainBits.clone().asInstanceOf[BitSet]
+              intersection.and(bits)
+              !intersection.isEmpty
+            }
+            
+            log.info(s"Chain rule '$rule', source '$source': best chain target '$bestChainTarget', " +
+                    s"${compatibleNonChainTargets.size} compatible non-chain targets")
+            
+            // Combine: best chain target + compatible non-chain targets
+            Map(bestChainTarget -> bestChainBits) ++ compatibleNonChainTargets
+          }
+        } else {
+          chainTargetToBits
         }
-        .flatMap(identity(_)) // Flatten the results
+        
+        // Return level-1 candidates (individual targets) that meet minSupport
+        filteredTargetToBits.filter { case (_, bits) => bits.cardinality() > minSupport }
+          .map { case (target, bits) =>
+            CandidateWithBits(rule, source, Array(target), bits.toByteArray)
+          }
+      }
+    
+    val initialCandidateCount = candidatesWithBits.count()
+    log.info(s"Initial candidates generated for all (rule, source) pairs: $initialCandidateCount total")
+    
+    // Now perform level-by-level expansion in a distributed manner
+    var currentLevel = candidatesWithBits.cache()
+    var bestCandidates: Dataset[CandidateWithBits] = null  // Accumulates best per (rule, source) across all levels
+    var k = 1
+    
+    // Track incremental drop statistics for unbounded mode with drop monitoring
+    val isUnbounded = maxTargets == Int.MaxValue
+    var dropStats = DropStats(0, 0.0, 0.0)
+    var prevSupports: Option[Seq[Double]] = None
+    
+    // Record initial support values for drop monitoring
+    if (isUnbounded && dropFactor.isDefined) {
+      val initialSupports = currentLevel.map(c => BitSet.valueOf(c.bitset).cardinality().toDouble).collect()
+      if (initialSupports.nonEmpty) {
+        prevSupports = Some(initialSupports)
+        log.info(s"Level 1: Initialized drop monitoring with ${initialSupports.length} support values")
+      }
+    }
+    
+    while (k < maxTargets) {
+      val candidateCount = currentLevel.count()
+      log.info(s"Level $k: $candidateCount candidates")
+      
+      if (candidateCount == 0) {
+        log.info(s"No candidates at level $k, stopping expansion")
+        k = maxTargets // Break the loop
+      } else {
+        // Select best from current level per (rule, source)
+        val currentBest = currentLevel
+          .groupByKey(c => (c.rule, c.source))
+          .mapGroups { case ((rule, source), iter) =>
+            val candidates = iter.toArray
+            // Select best: highest support, then most targets, then lexicographic
+            candidates.maxBy { c =>
+              val bits = BitSet.valueOf(c.bitset)
+              (bits.cardinality(), c.targets.length, c.targets.mkString(","))
+            }
+          }
+        
+        // Merge with accumulated best: for each (rule, source), keep the better one
+        if (bestCandidates == null) {
+          bestCandidates = currentBest.cache()
+        } else {
+          val merged = bestCandidates.union(currentBest)
+            .groupByKey(c => (c.rule, c.source))
+            .mapGroups { case ((rule, source), iter) =>
+              val candidates = iter.toArray
+              // Keep the best across old and new
+              candidates.maxBy { c =>
+                val bits = BitSet.valueOf(c.bitset)
+                (bits.cardinality(), c.targets.length, c.targets.mkString(","))
+              }
+            }
+            .cache()
+          
+          bestCandidates.unpersist()
+          bestCandidates = merged
+        }
+        
+        val bestCount = bestCandidates.count()
+        log.info(s"Level $k: Accumulated $bestCount best candidates across all levels so far")
+        
+        // Check for support drop before expanding to next level (unbounded mode only)
+        if (isUnbounded && dropFactor.isDefined && prevSupports.isDefined && k > 1) {
+          val currentSupports = currentLevel.map(c => BitSet.valueOf(c.bitset).cardinality().toDouble).collect()
+          
+          if (currentSupports.nonEmpty) {
+            val (shouldStop, updatedStats) = shouldStopExtension(
+              prevSupports.get, currentSupports, dropStats, dropFactor.get
+            )
+            dropStats = updatedStats
+            prevSupports = Some(currentSupports)
+            
+            if (shouldStop) {
+              log.info(s"Stopping unbounded expansion at level $k due to significant support drop.")
+              k = maxTargets // Break the loop
+            }
+          }
+        }
+        
+        if (k < maxTargets) {
+          k += 1
+          
+          // Generate next level candidates
+          val nextLevel = if (k == 2) {
+          // Special case: join all pairs
+          currentLevel.as("a")
+            .joinWith(currentLevel.as("b"), 
+              $"a.rule" === $"b.rule" && $"a.source" === $"b.source" && $"a.targets"(0) < $"b.targets"(0))
+            .map { case (c1, c2) =>
+              val bits1 = BitSet.valueOf(c1.bitset)
+              val bits2 = BitSet.valueOf(c2.bitset)
+              val inter = bits1.clone().asInstanceOf[BitSet]
+              inter.and(bits2)
+              
+              val newTargets = (c1.targets ++ c2.targets).sorted
+              CandidateWithBits(c1.rule, c1.source, newTargets, inter.toByteArray)
+            }
+            .filter(c => BitSet.valueOf(c.bitset).cardinality() > minSupport)
+        } else {
+          // For k>2: join candidates that share k-2 prefix
+          currentLevel
+            .groupByKey(c => (c.rule, c.source, c.targets.take(k - 2).mkString(",")))
+            .flatMapGroups { case (_, iter) =>
+              val candidates = iter.toArray.sortBy(_.targets.last)
+              val results = scala.collection.mutable.ArrayBuffer.empty[CandidateWithBits]
+              
+              var i = 0
+              while (i < candidates.length) {
+                var j = i + 1
+                while (j < candidates.length) {
+                  val c1 = candidates(i)
+                  val c2 = candidates(j)
+                  
+                  val bits1 = BitSet.valueOf(c1.bitset)
+                  val bits2 = BitSet.valueOf(c2.bitset)
+                  val inter = bits1.clone().asInstanceOf[BitSet]
+                  inter.and(bits2)
+                  
+                  if (inter.cardinality() > minSupport) {
+                    val newTargets = c1.targets :+ c2.targets.last
+                    results += CandidateWithBits(c1.rule, c1.source, newTargets, inter.toByteArray)
+                  }
+                  j += 1
+                }
+                i += 1
+              }
+              results
+            }
+        }
+        
+        currentLevel.unpersist()
+        currentLevel = nextLevel.cache()
+        
+        // Update support tracking for next iteration (unbounded mode with drop monitoring)
+        if (isUnbounded && dropFactor.isDefined) {
+          val newSupports = currentLevel.map(c => BitSet.valueOf(c.bitset).cardinality().toDouble).collect()
+          if (newSupports.nonEmpty) {
+            prevSupports = Some(newSupports)
+          }
+        }
+      }
+    }
+    }
+    // Convert best candidates to PairConstraints
+    log.info(s"Converting ${if (bestCandidates != null) "best candidates" else "no candidates"} to PairConstraints")
+    
+    val results = if (bestCandidates != null) {
+      bestCandidates.map { c =>
+        val bits = BitSet.valueOf(c.bitset)
+        val idxs = bits.stream().toArray
+        val traces = idxs.map(i => bcIntToTrace.value(i)).toSet
+        PairConstraint(c.rule, c.source, c.targets.mkString(","), traces)
+      }.cache() // Cache results before unpersisting source data
     } else {
+      log.warn("No best candidates found - returning empty dataset")
       spark.emptyDataset[PairConstraint]
     }
 
-    // Union the results - filtering is now done in the mining methods
-    regularResults.union(chainResults)
+    val resultCount = results.count()
+    log.info(s"Returning $resultCount best candidates from highest level")
+    
+    // Clean up after materializing results
+    if (currentLevel != null) currentLevel.unpersist()
+    if (bestCandidates != null) bestCandidates.unpersist()
+    
+    results
   }
 }
