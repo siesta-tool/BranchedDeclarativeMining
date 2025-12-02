@@ -1,7 +1,7 @@
 package auth.datalab.siesta.mining
 
 
-import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairConstraint, PairConstraintBits}
+import auth.datalab.siesta.model.{PairConstraint, TargetBranchedPairConstraint, PairConstraintBits}
 import org.apache.spark.sql.{Dataset, SparkSession}
 import java.util.BitSet
 import scala.jdk.CollectionConverters._

@@ -50,7 +50,21 @@ services:
     networks:
       - siesta-net
 
-  cbdeclare:
+  cbdeclare-simple:
+    image: balaktsis/siesta-cbdeclare:latest
+    container_name: cbdeclare-simple
+    networks:
+      - siesta-net
+    volumes:
+      - ./output:/app/output
+    environment:
+      # # S3 Configuration (uses defaults from image)
+      # s3endPointLoc: http://minio:9000
+      # # Mining parameters
+      LOG_NAME: bpic2012
+      SUPPORT: 0.1
+
+  cbdeclare-local:
     build:
       context: .
       dockerfile: Dockerfile

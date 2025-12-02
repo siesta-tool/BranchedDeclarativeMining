@@ -1,0 +1,40 @@
+# Build artifacts
+target/
+project/target/
+project/project/target/
+
+# IDE files
+.idea/
+.vscode/
+.metals/
+.bloop/
+.bsp/
+metals.sbt
+
+# Output files
+output/
+*.log
+
+# Evaluation and test data
+evaluation/
+input/*.xes
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Scripts (not needed in image, except docker-entrypoint.sh)
+run.sh
+run-app.sh
+# docker-entrypoint.sh is intentionally NOT ignored
+
+# Environment files
+.env
+
+# Docker files
+docker-compose.yml
+Dockerfile

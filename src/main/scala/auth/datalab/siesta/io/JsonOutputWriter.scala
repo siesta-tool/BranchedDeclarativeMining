@@ -1,6 +1,6 @@
 package auth.datalab.siesta.io
 
-import auth.datalab.siesta.model.Structs.{Constraint, ConstraintGroup, MiningResult}
+import auth.datalab.siesta.model.{Constraint, ConstraintGroup, MiningResult, BranchingPolicy, Config}
 import org.json4s._
 import org.json4s.native.Serialization
 import org.json4s.native.Serialization.write
@@ -56,8 +56,8 @@ class JsonOutputWriter {
    * @param outputPath The output directory path
    * @return The generated full file path
    */
-  def generateFileName(logName: String, support: Double, branchingBound: Int, branchingPolicy: Option[auth.datalab.siesta.model.Structs.BranchingPolicy], 
-                      config: auth.datalab.siesta.model.Structs.Config, outputPath: String = null): String = {
+  def generateFileName(logName: String, support: Double, branchingBound: Int, branchingPolicy: Option[BranchingPolicy], 
+                      config: Config, outputPath: String = null): String = {
     
     val basePath = if (outputPath != null) outputPath else config.outputPath
     val parts = scala.collection.mutable.ListBuffer[String]()

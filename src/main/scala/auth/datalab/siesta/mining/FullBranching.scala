@@ -1,6 +1,6 @@
 package auth.datalab.siesta.mining
 
-import auth.datalab.siesta.model.Structs.{PairConstraint, TargetBranchedPairConstraint}
+import auth.datalab.siesta.model.{PairConstraint, TargetBranchedPairConstraint}
 import auth.datalab.siesta.io.S3Connector
 import org.apache.spark.sql.Dataset
 

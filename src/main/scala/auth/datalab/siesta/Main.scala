@@ -1,6 +1,6 @@
 package auth.datalab.siesta
 
-import auth.datalab.siesta.model.Structs.{Config, Event, MiningContext}
+import auth.datalab.siesta.model.{Config, Event, MiningContext}
 import auth.datalab.siesta.utils.Utilities.{printConfig, parseArguments}
 import auth.datalab.siesta.io.S3Connector
 import auth.datalab.siesta.mining.DeclareMiner

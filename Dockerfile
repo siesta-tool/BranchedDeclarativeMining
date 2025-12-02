@@ -27,8 +27,34 @@ tar xvf spark-3.5.6-bin-hadoop3.tgz && mv spark-3.5.6-bin-hadoop3/ /opt/spark &&
 
 RUN mkdir /app
 WORKDIR /app
-RUN mkdir /tmp/spark-events
-COPY --from=declare /app/declare.jar /app/declare.jar
+RUN mkdir -p /tmp/spark-events /app/logs
 
-CMD ["tail","-f","/dev/null"]
+# Copy application files
+COPY --from=declare /app/declare.jar /app/declare.jar
+COPY docker-entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Set default environment variables
+ENV s3accessKeyAws=minioadmin \
+    s3secretKeyAws=minioadmin \
+    s3endPointLoc=http://minio:9000 \
+    s3ConnectionTimeout=600000 \
+    SPARK_MASTER=local[*] \
+    SPARK_DRIVER_MEMORY=10g \
+    SPARK_EXECUTOR_MEMORY=4g \
+    SUPPORT=0.0 \
+    BRANCHING_TYPE=TARGET \
+    BRANCHING_BOUND=3 \
+    OUTPUT_PATH=/app/output \
+    HARD_MODE=false \
+    FILTER_UNDERBOUND=false
+
+# Create default output and logs directories
+RUN mkdir -p /app/output /app/logs
+
+# Default volumes for output and logs
+VOLUME ["/app/output", "/app/logs"]
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD []
 

@@ -1,6 +1,6 @@
 package auth.datalab.siesta.utils
 
-import auth.datalab.siesta.model.Structs.{Config, Event, MetaData, PairFull, BranchingPolicy, BranchingType}
+import auth.datalab.siesta.model.{Config, Event, MetaData, PairFull, BranchingPolicy, BranchingType}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import scopt.OParser

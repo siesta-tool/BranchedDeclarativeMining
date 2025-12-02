@@ -1,6 +1,6 @@
 package auth.datalab.siesta.mining
 
-import auth.datalab.siesta.model.Structs._
+import auth.datalab.siesta.model._
 import auth.datalab.siesta.io.JsonOutputWriter
 import auth.datalab.siesta.utils.Utilities
 import org.apache.hadoop.fs.{FileSystem, Path}

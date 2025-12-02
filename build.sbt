@@ -27,7 +27,7 @@ libraryDependencies += "org.json4s" %% "json4s-native" % "3.7.0-M11"
 
 lazy val root = (project in file("."))
   .settings(
-    name := "DeclareMiningIncrementally",
+    name := "SIESTA-CBDeclare",
     // Fork the JVM to avoid SBT background job issues with Hadoop
     fork := true,
     // Enhanced JVM options for Java 17 and Spark 3.5.6
